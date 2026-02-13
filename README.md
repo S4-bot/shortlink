@@ -66,5 +66,78 @@ DTO
 在 UserRespDTO 中添加 @JsonSerialize 是为了在序列化时对敏感信息（如手机号）进行脱敏处理，保护用户隐私。
 
   如果想要看到真实的数据，就再创建一个即UserActualRespDTO。这里用到一个方法,使用 Hutool 工具类中的 BeanUtil.toBean 方法，将 UserRespDTO 对象转换为 UserActualRespDTO 类型的对象。return Results.success(BeanUtil.toBean(userService.getUserByUsername(username), UserActualRespDTO.class));
+
+
+2.5用户名全局唯一
+
+ 这里涉及到了缓存穿透。缓存穿透是指客户端请求的数据在数据库中根本不存在，从而导致请求穿透缓存，直接打到数据库的问题。
+
+ 常见的解决方案有两种（这里采用布隆过滤器）：
+ 1.缓存空对象
+
+ 2.布隆过滤器。布隆过滤器是一种数据统计的算法，用于检索一个元素是否存在一个集合中
+
+ ---创建布隆过滤器
+   1.引入redis依赖，如下。
+
+   2，创建admin.config包，在里面定义布隆过滤器RBloomFilterConfiguration，并做一些初始化
+   
+   @Configuration
+public class RBloomFilterConfiguration {
+
+    /**
+     * 防止用户注册查询数据库的布隆过滤器
+     */
+    @Bean
+    public RBloomFilter<String> userRegisterCachePenetrationBloomFilter(RedissonClient redissonClient) {
+        RBloomFilter<String> cachePenetrationBloomFilter = redissonClient.getBloomFilter("xxx");
+        cachePenetrationBloomFilter.tryInit(0, 0);
+        return cachePenetrationBloomFilter;
+    }
+}
+
+tryInit 有两个核心参数：
+● expectedInsertions：预估布隆过滤器存储的元素长度。
+● falseProbability：运行的误判率。
+错误率越低，位数组越长，布隆过滤器的内存占用越大。
+错误率越低，散列 Hash 函数越多，计算耗时较长。
+
+使用布隆过滤器的两种场景：
+● 初始使用：注册用户时就向容器中新增数据，就不需要任务向容器存储数据了。
+● 使用过程中引入：读取数据源将目标数据刷到布隆过滤器。
+
+------
+
+ 补充：这里在定义布隆过滤器时，需要引入redis依赖。课程上的依赖是
+ <dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-data-redis</artifactId>
+</dependency>
+
+<dependency>
+    <groupId>org.redisson</groupId>
+    <artifactId>redisson-spring-boot-starter</artifactId>
+</dependency>
+
+但是我出现了，找不到包的报错。需要再引入redis的核心依赖
+<dependency>
+    <groupId>org.redisson</groupId>
+    <artifactId>redisson</artifactId>
+    <version>3.21.3</version>
+</dependency>
+
+redisson-spring-boot-starter 已经是一个用于 Spring Boot 项目的启动器，它封装了对 Redisson 库的支持。但是，尽管如此，它可能并不会直接引入 Redisson 核心库（即 redisson）。
+
+为什么需要显式添加 Redisson 核心依赖？
+
+启动器和核心库的关系：
+
+1. redisson-spring-boot-starter 只是 Redisson 的一个 Spring Boot 启动器，它本身依赖于 Redisson 核心库，但它不一定会显式地在项目中引入 Redisson 核心库。如果某些 Redisson 的 API（如 RBucket、RBloomFilter 等）在项目中被调用，且这些 API 所需的类没有加载，那么会出现 Cannot resolve symbol 'api' 的错误。
+
+2. 依赖关系的传递性：
+启动器可能会通过某些依赖间接引入核心库，但这并不总是能确保所有所需的类被正确加载。因此，显式添加 Redisson 核心库可以避免缺少类的问题。
+
+3. 版本不兼容：
+如果 Spring Boot 启动器与 Redisson 核心库的版本不兼容，手动指定版本可以确保使用正确的版本。
   
 
