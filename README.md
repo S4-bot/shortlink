@@ -65,7 +65,16 @@ DTO
 
 在 UserRespDTO 中添加 @JsonSerialize 是为了在序列化时对敏感信息（如手机号）进行脱敏处理，保护用户隐私。
 
-  如果想要看到真实的数据，就再创建一个即UserActualRespDTO。这里用到一个方法,使用 Hutool 工具类中的 BeanUtil.toBean 方法，将 UserRespDTO 对象转换为 UserActualRespDTO 类型的对象。return Results.success(BeanUtil.toBean(userService.getUserByUsername(username), UserActualRespDTO.class));
+  如果想要看到真实的数据，就再创建一个即UserActualRespDTO。这里用到一个方法,使用 Hutool 工具类中的 BeanUtil.toBean 方法，将 UserRespDTO 对象转换为 UserActualRespDTO 类型的对象。
+  return Results.success(BeanUtil.toBean(userService.getUserByUsername(username), UserActualRespDTO.class));
+
+使用@Data生成的set和get方法的返回值是void，不能使用链式编程。需要加上@Accessors(chain = true)
+  
+解释注解@Accessors(chain = true)
+当 chain = true 时，Lombok 会为类中的字段生成返回当前对象（this）的 setter 方法，从而支持链式调用
+
+在 Results.java 文件中，Result 类的 setter 方法（如 setCode、setData 等）目前是标准的 Java setter 形式，返回值为 void。如果希望支持链式调用，可以在 Result 类上添加 @Accessors(chain = true) 注解。
+
 
 
 2.5用户名全局唯一
@@ -139,5 +148,50 @@ redisson-spring-boot-starter 已经是一个用于 Spring Boot 项目的启动�
 
 3. 版本不兼容：
 如果 Spring Boot 启动器与 Redisson 核心库的版本不兼容，手动指定版本可以确保使用正确的版本。
+
+要想实现真正的全局唯一，还需要为username加上唯一索引。
+
+2.6 海量用户注册
+
+  baseMapper 是 MyBatis-Plus 提供的通用 Mapper 接口。
+
+-----
+
+  1. 用户注册的代码实现，先在service定义方法，再去实现。最后编写controller。
+
+          int insert = baseMapper.insert(BeanUtil.toBean(userparam, UserDO.class));
+          
+解释：insert 方法用于向数据库中插入一条记录，参数是一个实体对象（这里是 UserDO）。
+返回值 int 表示受影响的行数，通常为 1（表示成功插入一行数据）
+
+遇到了bug,maven的配置文件出现了警告,原因是<repositories> 标签应该只出现在项目的 pom.xml 文件中，而不应该出现在 settings.xml 文件中。在pom中配置<repositories> 标签（<repositories> 标签 用于声明项目所需的远程仓库，Maven 会从这些仓库中下载依赖项）。
+<repositories>
+        <repository>
+            <id>aliyun-maven</id>
+            <url>https://maven.aliyun.com/repository/public</url>
+        </repository>
+        <repository>
+            <id>apache-repo</id>
+            <url>https://repo.maven.apache.org/maven2</url>
+        </repository>
+  </repositories>
+
+改正之后还是依赖的问题，原因是使用 system 作用域会导致 Maven 无法自动解析传递依赖（transitive dependencies），因此 redisson-spring-data 及其相关依赖可能未被正确引入。之后就是把相关属性删除就对了。
+
+2.实现自动填充（参考baomidou.com）
+
+-----
+解释注解
+
+@RequestParam 适用于查询参数（URL 中的 ?key=value 形式）。
+
+@RequestBody 适用于请求体中的 JSON 数据（常见于 POST/PUT 请求）
+  
+  
+
+
+
+
+
   
 
