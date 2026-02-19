@@ -260,7 +260,7 @@ redisson-spring-boot-starter 已经是一个用于 Spring Boot 项目的启动�
     <dependency>
         <groupId>org.apache.shardingsphere</groupId>
         <artifactId>shardingsphere-jdbc-core</artifactId>
-        <version>5.3.2</version>
+        <version>5.4.1</version>
     </dependency>
 
 3.修改配置文件，并新建shardingsphere-config.yaml文件
@@ -309,6 +309,48 @@ shardingsphere-config.yaml
     # 展现逻辑 SQL & 真实 SQL
     props:
       sql-show: true
+
+-----
+bug修复
+
+1. 这里我用的版本是5.4.1报错了，这个错误表明HASH_MOD算法不能用于自动分片配置。这是ShardingSphere 5.4.1版本的一个已知限制。需要手动去分片
+
+        # 分片算法
+        shardingAlgorithms:
+          # 数据表分片算法
+          user_table_hash_mod:
+            # 根据分片键 Hash 分片
+            type: INLINE
+              # 自定义分片算法
+            props:
+              algorithm-expression: t_user_${Math.abs(username.hashCode()) % 16}
+          
+2.Java版本兼容性问题
+Java 9+的变化：从Java 9开始，JAXB（Java Architecture for XML Binding）被从JDK标准库中移除
+ShardingSphere需求：ShardingSphere 5.4.1需要JAXB来进行XML配置解析
+
+   <!-- ✅ JAXB 依赖（Java EE 版本，与 ShardingSphere 兼容） -->
+        <dependency>
+            <groupId>javax.xml.bind</groupId>
+            <artifactId>jaxb-api</artifactId>
+            <version>2.3.1</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.sun.xml.bind</groupId>
+            <artifactId>jaxb-impl</artifactId>
+            <version>2.3.9</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.sun.xml.bind</groupId>
+            <artifactId>jaxb-core</artifactId>
+            <version>2.3.0.1</version>
+            <scope>runtime</scope>
+        </dependency>
+
+
 
   -----
 
