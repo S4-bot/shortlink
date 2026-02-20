@@ -364,8 +364,123 @@ ShardingSphere需求：ShardingSphere 5.4.1需要JAXB来进行XML配置解析
 4. 参数复用
 
 -----
-  
 
+## 2.9 敏感数据加密存储
+
+  在shardingsphere-config.yaml文件中来编写加密配置
+
+    #数据源集合
+    dataSources:
+      # 定义数据源 ds_0
+      ds_0:
+        # 数据源类名，HikariCP 是一种高效的数据库连接池
+        dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+        # 使用 MySQL 驱动类
+        driverClassName: com.mysql.cj.jdbc.Driver
+        # 数据库连接 URL，包含了数据库名称、字符编码、时区等配置
+        jdbcUrl: jdbc:mysql://127.0.0.1:3306/link?useUnicode=true&characterEncoding=UTF-8&rewriteBatchedStatements=true&allowMultiQueries=true&serverTimezone=Asia/Shanghai
+        # 数据库用户名
+        username: root
+        # 数据库密码
+        password: 123456
+    
+    # 规则配置，包含分片与加密规则
+    rules:
+      # 分片规则
+      - !SHARDING
+        # 分片的表配置
+        tables:
+          t_user:
+            # 定义真实数据节点。ds_0 表示使用 ds_0 数据源，t_user_${0..15} 表示数据表分片的命名规则
+            actualDataNodes: ds_0.t_user_${0..15}
+            # 分表策略
+            tableStrategy:
+              # 标准分片策略，使用单分片键进行分片
+              standard:
+                # 分片键，使用 `username` 字段作为分片依据
+                shardingColumn: username
+                # 分片算法，使用 `user_table_hash_mod` 算法
+                shardingAlgorithmName: user_table_hash_mod
+    
+        # 定义分片算法
+        shardingAlgorithms:
+          # 分表时使用的分片算法
+          user_table_hash_mod:
+            # 根据分片键的 Hash 值进行分片
+            type: INLINE
+            # 自定义分片算法表达式
+            props:
+              # 算法表达式，采用 `username` 的 `hashCode()` 值对 16 取模，决定分表编号
+              algorithm-expression: t_user_${Math.abs(username.hashCode()) % 16}
+    
+      # 加密规则
+      - !ENCRYPT
+        tables:
+          # 需要加密的表配置
+          t_user:
+            columns:
+              # 加密字段 `phone`
+              phone:
+                cipher:
+                  # 加密后字段名为 `phone`
+                  name: phone
+                  # 使用的加密器名为 `common_encryptor`
+                  encryptorName: common_encryptor
+              # 加密字段 `mail`
+              mail:
+                cipher:
+                  # 加密后字段名为 `mail`
+                  name: mail
+                  # 使用的加密器名为 `common_encryptor`
+                  encryptorName: common_encryptor
+    
+        # 定义加密器
+        encryptors:
+          # 加密器配置，使用 AES 算法
+          common_encryptor:
+            type: AES
+            # 配置 AES 加密密钥
+            props:
+              aes-key-value: d6oadClrrb9A3GWo
+    
+    #配置全局属性
+    props:
+      # 开启 SQL 执行日志输出，用于调试与监控
+      sql-show: true
+
+注意，因为使用的是5.4.1版本，所以加密字段下要使用 mail:
+
+                    mail:
+                      cipher：？
+                        name:？
+                        encryptorName:？
+
+## 2.10 用户个人信息修改功能
+
+  1.在controller中定义update方法
+  方式：PUT 
+  返回值：无 
+  路径：/api/short-link/v1/user
+  
+      @PutMapping("/api/short-link/v1/user")
+    public Result<Void> update(@RequestBody UserUpdateRepDTO requestParam){
+        userService.update(requestParam);
+        return Results.success();
+    }
+
+  2.在service中定义接口
+
+    void update(UserUpdateRepDTO userparam);
+
+  3.在impl中实现
+
+    @Override
+      public void update(UserUpdateRepDTO requestParam) {
+          // TODO: 验证当前用户是否是登录用户
+          LambdaUpdateWrapper<UserDO> updateWrapper = Wrappers.lambdaUpdate(UserDO.class)
+                  .eq(UserDO::getUsername, requestParam.getUsername());
+          baseMapper.update(BeanUtil.toBean(requestParam, UserDO.class),updateWrapper);
+      }
 
 
 
