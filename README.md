@@ -487,7 +487,7 @@ ShardingSphere需求：ShardingSphere 5.4.1需要JAXB来进行XML配置解析
 
 1.在controller中定义login方法
   方式：Post
-  返回值：userService.login(requestParam 
+  返回值：Results.success(userService.login(requestParam))
   路径：/api/short-link/v1/user/login
 
       @PostMapping("/api/short-link/v1/user/login")
@@ -538,6 +538,177 @@ ShardingSphere需求：ShardingSphere 5.4.1需要JAXB来进行XML配置解析
 
 # 第二个是使用JWT令牌。
 
+步骤：
+1.首先要引入依赖
 
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt</artifactId>
+            <version>0.9.1</version>
+        </dependency>
+
+2.在utils包里创建工具类JwtUtils。里面要有创建和解析令牌的方法
+
+
+    /**
+     * JWT工具类
+     */
+    
+    public class JwtUtils {
+
+    /**
+     * JWT密钥 - 与测试类保持一致
+     */
+    private static final String SECRET_KEY = "d6oadClrrb9A3GWo";
+
+    /**
+     * 令牌过期时间（30分钟）
+     */
+    private static final long EXPIRATION_TIME = 30 * 60 * 1000L; // 30分钟
+
+    /**
+     * 生成JWT令牌
+     *
+     * @param username 用户名
+     * @param userId 用户ID
+     * @return JWT令牌
+     */
+    public static String generateToken(String username, Long userId) {
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("username", username);
+        claims.put("userId", userId);
+
+        return Jwts.builder()
+                .setClaims(claims)
+                .setSubject(username)
+                .setExpiration(new Date(System.currentTimeMillis() + EXPIRATION_TIME))
+                .signWith(SignatureAlgorithm.HS512, SECRET_KEY)
+                .compact();
+    }
+
+    /**
+     * 解析JWT令牌
+     *
+     * @param token JWT令牌
+     * @return Claims对象，包含令牌中的信息
+     * @throws io.jsonwebtoken.JwtException 当令牌无效或过期时抛出异常
+     */
+    public static Claims parseToken(String token) {
+        try {
+            return Jwts.parser()
+                    .setSigningKey(SECRET_KEY)
+                    .parseClaimsJws(token)
+                    .getBody();
+        } catch (Exception e) {
+            log.error("解析JWT令牌失败: {}", e.getMessage());
+            throw e;
+        }
+    }
+
+    /**
+     * 验证令牌是否有效
+     *
+     * @param token JWT令牌
+     * @return true表示有效，false表示无效
+     */
+    public static boolean validateToken(String token) {
+        try {
+            parseToken(token);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * 从令牌中获取用户名
+     *
+     * @param token JWT令牌
+     * @return 用户名
+     */
+    public static String getUsernameFromToken(String token) {
+        Claims claims = parseToken(token);
+        return claims.getSubject();
+    }
+
+    /**
+     * 从令牌中获取用户ID
+     *
+     * @param token JWT令牌
+     * @return 用户ID
+     */
+    public static Long getUserIdFromToken(String token) {
+        Claims claims = parseToken(token);
+        return claims.get("userId", Long.class);
+    }
+
+    /**
+     * 检查令牌是否过期
+     *
+     * @param token JWT令牌
+     * @return true表示已过期，false表示未过期
+     */
+    public static boolean isTokenExpired(String token) {
+        try {
+            Claims claims = parseToken(token);
+            Date expiration = claims.getExpiration();
+            return expiration.before(new Date());
+        } catch (Exception e) {
+            return true;
+        }
+    }
+    }
+
+## 2.12创建验证用户登录接口
+
+1.在controller中定义login方法
+  方式：Get
+  返回值：Results.success(userService.checkLogin(username,token))
+  路径：/api/short-link/v1/user/check-login
+
+     @GetMapping("/api/short-link/v1/user/check-login")
+      public Result<Boolean> checkLogin(@RequestParam("username") String username,@RequestParam("token") String token){
+          return Results.success(userService.checkLogin(username,token));
+      }
+
+
+ 2.在service中定义接口
+
+    Boolean checkLogin(String username,String  token);
+
+ 3.在impl中实现
+
+     @Override
+        public Boolean checkLogin(String username,String token) {
+            return stringRedisTemplate.opsForHash().get("login_"+ username, token) !=null;
+        }
+
+ ## 2.13 创建用户退出登录接口
+ 
+1.在controller中定义login方法
+  方式：Delete
+  返回值：无
+  路径：/api/short-link/v1/user/logout
+
+    @DeleteMapping("/api/short-link/v1/user/logout")
+      public Result<Void> logout(@RequestParam("username") String username,@RequestParam("token") String token){
+          userService.checkLogout(username,token);
+          return Results.success();
+      }
+
+ 2.在service中定义接口
+
+     void checkLogout(String username, String token);
+
+ 3.在impl中实现
+
+     @Override
+    public void checkLogout(String username, String token) {
+       if(checkLogin(username,token)){
+           stringRedisTemplate.delete("login_"+ username);
+           return;
+       }
+       throw new ClientException("用户未登录或登录异常");
+    }
   
 
