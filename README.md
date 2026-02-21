@@ -483,6 +483,60 @@ ShardingSphere需求：ShardingSphere 5.4.1需要JAXB来进行XML配置解析
       }
 
 
+## 2.11用户登录接口
+
+1.在controller中定义login方法
+  方式：Post
+  返回值：userService.login(requestParam 
+  路径：/api/short-link/v1/user/login
+
+      @PostMapping("/api/short-link/v1/user/login")
+    public Result<UserLoginRespDTO> login(@RequestBody UserLoginRepDTO requestParam){
+        return Results.success(userService.login(requestParam));
+    }
+
+ 2.在service中定义接口
+ 
+    UserLoginRespDTO login(UserLoginRepDTO requestParam);
+ 
+
+3.在impl中实现
+
+    @Override
+    public void update(UserUpdateRepDTO requestParam) {
+        // TODO: 验证当前用户是否是登录用户
+        LambdaUpdateWrapper<UserDO> updateWrapper = Wrappers.lambdaUpdate(UserDO.class)
+                .eq(UserDO::getUsername, requestParam.getUsername());
+        baseMapper.update(BeanUtil.toBean(requestParam, UserDO.class),updateWrapper);
+    }
+
+    @Override
+    public UserLoginRespDTO login(UserLoginRepDTO requestParam) {
+        LambdaQueryWrapper<UserDO> queryWrapper = Wrappers.lambdaQuery(UserDO.class)
+                .eq(UserDO::getUsername, requestParam.getUsername())
+                .eq(UserDO::getPassword, requestParam.getPassword())
+                .eq(UserDO::getDelFlag, 0);
+        UserDO userDO = baseMapper.selectOne(queryWrapper);
+        if(userDO==null){
+           throw new ClientException("用户不存在");
+        }
+    //        Boolean hasLogin = stringRedisTemplate.hasKey(requestParam.getUsername());
+    //        if(hasLogin !=null && hasLogin){
+    //            throw new ClientException("用户已登录");
+    //        }
+    //        String uuid = UUID.randomUUID().toString();
+    //        stringRedisTemplate.opsForHash().put("login_"+ requestParam.getUsername(),uuid, JSON.toJSONString(userDO));
+    //        stringRedisTemplate.expire("login_"+ requestParam.getUsername(), 30L, TimeUnit.MINUTES);
+    //        return new UserLoginRespDTO(uuid);
+            String jwt = JwtUtils.generateToken(requestParam.getUsername(), userDO.getId());
+            stringRedisTemplate.opsForHash().put("login_"+ requestParam.getUsername(),jwt, JSON.toJSONString(userDO));
+            stringRedisTemplate.expire("login_"+ requestParam.getUsername(), 30L, TimeUnit.MINUTES);
+            return new UserLoginRespDTO(jwt);
+        }
+
+第一个是使用的是用UUID来生成唯一标识token。
+
+# 第二个是使用JWT令牌。
 
 
   
