@@ -710,5 +710,165 @@ ShardingSphere需求：ShardingSphere 5.4.1需要JAXB来进行XML配置解析
        }
        throw new ClientException("用户未登录或登录异常");
     }
+
+### 三、短连接分组
+
+功能分析
+  短链接分组就像是谷歌浏览器的收藏栏，标识着不同网站不同的语义。如果大家使用短链接系统，创建不同语义的短链接需要在一个分页里查询，这是一件多么令人抓狂的事。
+  按照不同的思路的拆分开，这样查询的时候就会方便很多。也方便统计。
+  ● 增加短链接分组
+  ● 修改短链接分组（只能修改名称）
+  ● 查询短链接分组集合（短链接分组最多10个）
+  ● 删除短链接分组
+  ● 短链接分组排序
+
+## 3.1创建短链接分组数据库表
+  建表语句：
   
+    CREATE TABLE `t_group` (
+      `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+      `gid` varchar(32) DEFAULT NULL COMMENT '分组标识',
+      `name` varchar(64) DEFAULT NULL COMMENT '分组名称',
+      `username` varchar(256) DEFAULT NULL COMMENT '创建分组用户名',
+      `sort_order` int(3) DEFAULT NULL COMMENT '分组排序',
+      `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+      `update_time` datetime DEFAULT NULL COMMENT '修改时间',
+      `del_flag` tinyint(1) DEFAULT NULL COMMENT '删除标识 0：未删除 1：已删除',
+      PRIMARY KEY (`id`),
+      UNIQUE KEY `idx_unique_username_gid` (`gid`,`username`) USING BTREE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;;
+
+
+## 3.2 新增用户接口开发
+
+  1.创建控制层，接口层，实现层，持久层
+
+  接口层要继承extends IService<GroupDO>
+  实现层要继承extends ServiceImpl<GroupMapper, GroupDO>
+  持久层要继承extends BaseMapper<GroupDO>
+
+  2，创建接口并在实现类里实现
+
+    /**
+     * 短连接分组实现层
+     */
+    @Service
+    @Slf4j
+    public class GroupServiceImpl extends ServiceImpl<GroupMapper, GroupDO> implements GroupService {
+    
+        @Override
+        public void saveGroup(ShortLinkGroupSaveRepDTO requestParam) {
+            String gid ;
+            do{
+                gid = RandomUtils.generateRandom();
+            } while (!hasGid(gid));
+            GroupDO groupDO = GroupDO.builder()
+                    .name(requestParam.getName())
+                    .gid(gid)
+                    .build();
+            baseMapper.insert(groupDO);
+        }
+    
+    
+        private boolean hasGid(String gid){
+            LambdaQueryWrapper<GroupDO> queryWrapper = Wrappers.lambdaQuery(GroupDO.class)
+                    .eq(GroupDO::getDelFlag, 0)
+                    .eq(GroupDO::getGid, gid)
+                    //TODO: 设置用户名
+                    .eq(GroupDO::getUsername, null);
+            GroupDO hasGroupFlag = baseMapper.selectOne(queryWrapper);
+            return hasGroupFlag == null;
+        }
+    }
+
+-----
+
+补充：这里需要用随机函数来生成gid。
+
+# 怎么创建一个随机函数？
+
+1.在工具包里定一个个随机数的工具类RandomUtils
+
+2.实现业务逻辑
+
+    // 定义字母和数字的字符集
+    private static final String CHAR_SET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    private static final SecureRandom RANDOM = new SecureRandom();
+    //方法重载
+    public static String generateRandom() {
+       return generateRandom(6);
+    }
+    /**
+     * 生成一个包含字母和数字的指定长度的随机字符串
+     *
+     * @param length 随机字符串的长度
+     * @return 生成的随机字符串
+     */
+    public static String generateRandom(int length) {
+        StringBuilder sb = new StringBuilder(length);
+
+        // 从字符集随机选择字符
+        for (int i = 0; i < length; i++) {
+            int randomIndex = RANDOM.nextInt(CHAR_SET.length());
+            sb.append(CHAR_SET.charAt(randomIndex));
+        }
+        return sb.toString();
+    }
+    }
+-----
+
+3.这里对数据库持久层基础属性进行了优化。把常用的属性单独定义一个类，并继承它。（shortlink.admin.common.database）
+
+    /**
+     * 数据库持久层对象基础属性
+     */
+    @Data
+    public class BaseDO {
+    
+    
+        /**
+         * 创建时间
+         */
+        @TableField(fill = FieldFill.INSERT)
+        private Date createTime;
+    
+        /**
+         * 修改时间
+         */
+        @TableField(fill = FieldFill.INSERT_UPDATE)
+        private Date updateTime;
+    
+        /**
+         * 删除标识 0：未删除 1：已删除
+         */
+        @TableField(fill = FieldFill.INSERT)
+        private Integer delFlag;
+    }
+
+# bug:
+
+  这里是出现了找不到t_group的bug。通过ai发现是shardingspere的配置问题，可能是没有配置该表的属性，默认进行了分片。所以需要配置t_group不分片
+
+    rules:
+      - !SHARDING
+        tables:
+          t_user:
+            # 真实数据节点，比如数据库源以及数据库在数据库中真实存在的
+            actualDataNodes: ds_0.t_user_${0..15}
+            # 分表策略
+            tableStrategy:
+              # 用于单分片键的标准分片场景
+              standard:
+                # 分片键
+                shardingColumn: username
+                # 分片算法，对应 rules[0].shardingAlgorithms
+                shardingAlgorithmName: user_table_hash_mod
+                # 配置 t_group 表为普通表（不分片）
+          t_group:
+            actualDataNodes: ds_0.t_group
+
+
+
+
+      
 
