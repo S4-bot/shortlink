@@ -867,7 +867,106 @@ ShardingSphere需求：ShardingSphere 5.4.1需要JAXB来进行XML配置解析
           t_group:
             actualDataNodes: ds_0.t_group
 
+## 3.3查询短链接分组接口
 
+ 就是常规的业务逻辑。
+
+ -----
+ 补充：
+    BeanUtil.copyToList 和 BeanUtil.toBean 的区别：
+     
+   1. BeanUtil.toBean() - 单对象转换
+    特点：
+    · 一对一转换
+    · 处理单个对象
+    · 属性名相同的字段会自动映射
+    · 支持类型转换（如 String → Integer）
+
+  2. BeanUtil.copyToList() - 集合转换
+     特点：
+     · 一对多转换
+     · 处理整个集合
+     · 自动遍历集合并逐个转换
+     · 保持原有的集合结构
+
+-----
+
+## 3.4 过滤器封装用户上下文功能
+  1.定义过滤器，在admin.common.biz.user包了创建UserTransmitFilter 并实现 Filter 接口。
+  # 2.实现Filter接口，要重写三个方法init，doFilter，destroy
+   init() 方法
+    作用
+    · 初始化过滤器
+    · 在过滤器实例创建后、第一次使用前调用
+    · 只执行一次
+
+  doFilter() 方法
+    作用
+    · 执行过滤逻辑
+    · 对每个请求/响应进行处理
+    · 是过滤器的核心方法
+
+   destroy() 方法
+    作用
+    ·  销毁过滤器
+    ·  在过滤器被移除时调用
+    ·  只执行一次
+
+    /**
+     * 用户信息传输过滤器
+     */
+    @RequiredArgsConstructor
+    public class UserTransmitFilter implements Filter {
+    
+        private final StringRedisTemplate stringRedisTemplate;
+        @Override
+        public void doFilter(ServletRequest servletRequest, ServletResponse servletResponse, FilterChain filterChain) throws IOException, ServletException {
+            HttpServletRequest httpServletRequest = (HttpServletRequest) servletRequest;
+            String requestURI = httpServletRequest.getRequestURI();
+            if(!Objects.equals(requestURI,"/api/short-link/v1/user/login")){
+                String username = httpServletRequest.getHeader("username");
+                String token = httpServletRequest.getHeader("token");
+                Object userInfoJsonStr = stringRedisTemplate.opsForHash().get("login_"+ username, token);
+                if (userInfoJsonStr !=null) {
+                    UserInfoDTO userInfoDTO = JSON.parseObject(userInfoJsonStr.toString(), UserInfoDTO.class);
+                    UserContext.setUser(userInfoDTO);
+                }
+            }
+    
+            try {
+                //放行
+                filterChain.doFilter(servletRequest, servletResponse);
+            } finally {
+                UserContext.removeUser();
+            }
+        }
+    }
+
+   其中在doFilter中filterChain只有doFilter这一个方法。它的作用就是放行
+
+
+3.admin.config包里创建UserConfiguration。用来注册 UserTransmitFilter：将用户信息传递过滤器注册到 Spring 容器中。
+
+    /**
+     * 用户配置自动装配
+     */
+    @Configuration
+    public class UserConfiguration {
+    
+        /**
+         * 用户信息传递过滤器
+         */
+        @Bean
+        public FilterRegistrationBean<UserTransmitFilter> globalUserTransmitFilter(StringRedisTemplate stringRedisTemplate) {
+            FilterRegistrationBean<UserTransmitFilter> registration = new FilterRegistrationBean<>();
+            registration.setFilter(new UserTransmitFilter(stringRedisTemplate));
+            registration.addUrlPatterns("/*");
+            registration.setOrder(0);
+            return registration;
+        }
+    }
+
+       
 
 
       
