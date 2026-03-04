@@ -966,8 +966,399 @@ ShardingSphere需求：ShardingSphere 5.4.1需要JAXB来进行XML配置解析
         }
     }
 
+
+### 四、短连接管理
+## 4.1短链接模块功能分析
+  ● 短链接跳转原理
+  ● 创建短链接表
+  ● 新增短链接
+  ● Host添加域名映射
+  ● 分页查询短链接集合
+  ● 编辑短链接
+  ● 将短链接删除（回收站）
+
+## 4.2创建短链接数据库表 
+
+    
+    CREATE TABLE `t_link` (
+      `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+      `domain` varchar(128) DEFAULT NULL COMMENT '域名',
+      `short_uri` varchar(8) DEFAULT NULL COMMENT '短链接',
+      `full_short_url` varchar(128) DEFAULT NULL COMMENT '完整短链接',
+      `origin_url` varchar(1024) DEFAULT NULL COMMENT '原始链接',
+        `click_num` int(11) DEFAULT 0 COMMENT '点击量',
+        `gid` varchar(32) DEFAULT NULL COMMENT '分组标识',
+        `enable_status` tinyint(1) DEFAULT NULL COMMENT '启用标识 0：未启用 1：已启用',
+        `created_type` tinyint(1) DEFAULT NULL COMMENT '创建类型 0：控制台 1：接口',
+        `valid_date_type` tinyint(1) DEFAULT NULL COMMENT '有效期类型 0：永久有效 1：用户自定义',
+        `valid_date` datetime DEFAULT NULL COMMENT '有效期',
+        `describe` varchar(1024) DEFAULT NULL COMMENT '描述',
+      `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+      `update_time` datetime DEFAULT NULL COMMENT '修改时间',
+      `del_flag` tinyint(1) DEFAULT NULL COMMENT '删除标识 0：未删除 1：已删除',
+      PRIMARY KEY (`id`),
+      UNIQUE KEY `idx_unique_full_short_url` (`full_short_url`) USING BTREE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
        
+## 4.3 新增分组短链接
+
+  1.控制层
+  方式：Post
+  返回值：Results.success(shortLinkService.createShortLink(requestParam))
+  路径：/api/short-link/v1/create
+
+     @PostMapping("/api/short-link/v1/create")
+        public Result<ShortLinkCreateRespDTO> createShortLink(@RequestBody ShortLinkCreateReqDTO requestParam) {
+            return Results.success(shortLinkService.createShortLink(requestParam));
+        }
+
+  2.接口层
+
+    ShortLinkCreateRespDTO createShortLink(ShortLinkCreateReqDTO requestParam);
+
+  3.接口实现层
+
+     private final RBloomFilter<String> shortUriCreateCachePenetrationBloomFilter;
+    /**
+     * 创建短链接
+     *
+     * @param requestParam
+     * @return
+     */
+    @Override
+    public ShortLinkCreateRespDTO createShortLink(ShortLinkCreateReqDTO requestParam) {
+        String shortLinkSuffix = generateSuffix(requestParam);
+        //把类型转换成DO，方便插入到数据库
+        //短链接格式：域名/短链接后缀
+        String fullShortUrl = StrBuilder.create()
+                .append(requestParam.getDomain())
+                .append("/")
+                .append(shortLinkSuffix)
+                .toString();
+        ShortLinkDO shortLinkDO = ShortLinkDO.builder()
+                .domain(requestParam.getDomain())
+                .originUrl(requestParam.getOriginUrl())
+                .gid(requestParam.getGid())
+                .createdType(requestParam.getCreatedType())
+                .validDateType(requestParam.getValidDateType())
+                .validDate(requestParam.getValidDate())
+                .describe(requestParam.getDescribe())
+                .shortUri(shortLinkSuffix)
+                .fullShortUrl(fullShortUrl)
+                .enableStatus(0)
+                .build();
+        try {
+            baseMapper.insert(shortLinkDO);
+        } catch (DuplicateKeyException ex) {
+            //查询数据库，生成的短链接是否存在
+            LambdaQueryWrapper<ShortLinkDO> queryWrapper = Wrappers.lambdaQuery(ShortLinkDO.class)
+                    .eq(ShortLinkDO::getFullShortUrl, fullShortUrl);
+            ShortLinkDO hasShortLinkDO = baseMapper.selectOne(queryWrapper);
+            if(hasShortLinkDO != null){
+                //短链接已存在
+                log.warn("短链接：{} 重复入库", fullShortUrl);
+                throw new ServiceException("短链接生成重复");
+            }
+        }
+        //把生成的短链接放到布隆过滤器中
+        shortUriCreateCachePenetrationBloomFilter.add(fullShortUrl);
+        return ShortLinkCreateRespDTO.builder()
+                .fullShortUrl(shortLinkDO.getShortUri())
+                .originUrl(requestParam.getOriginUrl())
+                .gid(shortLinkDO.getGid())
+                .build();
+    }
+
+    /**
+     * 生成短链接后缀
+     *
+     * @param requestParam
+     * @return
+     */
+    private String generateSuffix(ShortLinkCreateReqDTO requestParam){
+        int customGenerateCount = 0;
+        //定义短链接后缀
+        String shorUri;
+        while (true) {
+            if(customGenerateCount > 10){
+                //尝试10次，如果10次都失败，则抛出异常
+                throw new ServiceException("短链接频繁生成，请稍后再试");
+            }
+            //使用HASH算法生成短链接后缀
+            String originUrl = requestParam.getOriginUrl();
+            // 加上当前毫秒值 ，降低冲突
+            originUrl+=System.currentTimeMillis();
+            shorUri= HashUtil.hashToBase62(originUrl);
+            //判断短链接后缀是否已经存在
+            if(!shortUriCreateCachePenetrationBloomFilter.contains(requestParam.getDomain() + "/" + shorUri)){
+                //短链接后缀不存在，直接退出
+                break;
+            }
+            customGenerateCount++;
+        }
+        return shorUri;
+    }
+
+  逻辑：
+  首先定义一个方法来生成短链接后缀，并且设置最大尝试次数，并在后面加上当前毫秒值来降低冲突。
+  然后在重写的方法里解决误判，通过捕捉异常来查询数据库，如果存在就抛异常。并把生成的短链接放到布隆过滤器中，来解决缓存穿透。
+
+-----
+  
+补充：
+ 1.在mapper中定义的是接口
+ 2.在ShortLinkDO中，describe要加上注解
+ 
+    @TableField("`describe`")
+    
+ 原因：DESCRIBE (查看表结构)是关键字，：MyBatis-Plus 生成 SQL 不会自动给保留字加反引号。MySQL 看到 describe 以为是关键字，不是字段名。
+
+3.短链接需要区分大小写。在数据库中需要把short_uri字段的character_set属性设置为utf8;collation属性设置为utf8_bin。
+
+4.复习布隆过滤器的创建。在common.config中定义RBloomFilterConfiguration类，在里面编写业务。
+
+5.复习全局异常拦截器。代码在common.convention和common.web中。
+
+-----      
 
 
-      
+## 4.4短链接海量数据分片分表
+  1.修改配置文件。
+
+    server:
+      port: 8001
+    
+    
+    spring:
+      datasource:
+        # ShardingSphere 对 Driver 自定义，实现分库分表等隐藏逻辑
+        driver-class-name: org.apache.shardingsphere.driver.ShardingSphereDriver
+        # ShardingSphere 配置文件路径
+        url: jdbc:shardingsphere:classpath:shardingsphere-config.yaml
+      data:
+        redis:
+          host: 127.0.0.1
+          port: 6379
+          password: 123456
+
+  2.并添加yaml文件
+  
+    # 数据源集合
+    dataSources:
+      ds_0:
+        dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+        driverClassName: com.mysql.cj.jdbc.Driver
+        jdbcUrl: jdbc:mysql://127.0.0.1:3306/link?useUnicode=true&characterEncoding=UTF-8&rewriteBatchedStatements=true&allowMultiQueries=true&serverTimezone=Asia/Shanghai
+        username: root
+        password: 123456
+    
+    rules:
+      - !SHARDING
+        tables:
+          t_link:
+            # 真实数据节点，比如数据库源以及数据库在数据库中真实存在的
+            actualDataNodes: ds_0.t_link_${0..15}
+            # 分表策略
+            tableStrategy:
+              # 用于单分片键的标准分片场景
+              standard:
+                # 分片键
+                shardingColumn: gid
+                # 分片算法，对应 rules[0].shardingAlgorithms
+                shardingAlgorithmName: link_table_hash_mod
+                # 配置 t_group 表为普通表（不分片）
+          #t_group不分表
+          t_group:
+            actualDataNodes: ds_0.t_group
+        # 分片算法
+        shardingAlgorithms:
+          # 数据表分片算法
+          link_table_hash_mod:
+            # 根据分片键 Hash 分片
+            type: INLINE
+            # 自定义分片算法
+            props:
+              algorithm-expression: t_link_${Math.abs(gid.hashCode()) % 16}
+    props:
+      sql-show: true
+
+## 4.5拦截器封装用户上下文（补充篇）
+1.
+
+      HttpServletRequest httpServletRequest = (HttpServletRequest) servletRequest;
+这里转换的原因是：
+
+ServletRequest (父接口 - 通用请求)
+    ↑
+    │ 继承
+HttpServletRequest (子接口 - HTTP 专用请求)
+
+ServletRequest: 通用的请求接口，适用于任何协议（HTTP、FTP、SMTP 等）
+HttpServletRequest: 专门用于 HTTP 协议的请求，提供 HTTP 特有的方
+
+2.Objects.equals() 是 Java 中用于安全比较两个对象是否相等的工具方法。
+
+3.StrUtil.isAllBlank()
+检查传入的所有字符串参数是否全部为空白（blank）
+只要有一个不是空白，就返回 false
+全部都为空白（null、空字符串、纯空格），才返回 true
+
+StrUtil.isEmpty("")判断是否为空字符串（不含 null）
+
+## 4.6 短链接分页查询
+  1.要先定义一个分页插件。
+
+    package com.nageoffer.shortlink.project.common.config;
+    
+    @Configuration
+    public class DataBaseConfiguration {
+        /**
+         * 分页插件
+         */
+        @Bean
+        public MybatisPlusInterceptor mybatisPlusInterceptor() {
+            MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
+            interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.MYSQL));
+            return interceptor;
+        }
+    }
+
+  2.定义请求对象，需要继承Page<ShortLinkDO>
+
+      package com.nageoffer.shortlink.project.dto.req;
+    
+    /**
+     * 短链接分页查询请求参数
+     */
+    @Data
+    public class ShortLinkPageReqDTO  extends Page<ShortLinkDO> {
+    
+        /**
+         * 分组标识
+         */
+        private String gid;
+         
+    }
+
+
+  3.定义返回对象
+
+    package com.nageoffer.shortlink.project.dto.resp;
+    
+    /**
+     * 短链接分页查询返回参数
+     *
+     */
+    @Data
+    public class ShortLinkPageRespDTO {
+    
+    
+    
+    
+        /**
+         * ID
+         */
+        private Long id;
+    
+        /**
+         * 域名
+         */
+        private String domain;
+    
+        /**
+         * 短链接
+         */
+        private String shortUri;
+    
+        /**
+         * 完整短链接
+         */
+        private String fullShortUrl;
+    
+        /**
+         * 原始链接
+         */
+        private String originUrl;
+    
+    
+        /**
+         * 分组标识
+         */
+        private String gid;
+    
+    
+    
+        /**
+         * 有效期类型 0：永久有效 1：用户自定义
+         */
+        private Integer validDateType;
+    
+        /**
+         * 有效期
+         */
+        private Date validDate;
+    
+        /**
+         * 描述
+         */
+        @TableField("`describe`")
+        private String describe;
+    
+        /**
+         * 图标
+         */
+        private  String favicon;
+    }
+
+4.控制层
+  方式：Get
+  返回值：Results.success(shortLinkService.pageShortLink(requestParam))
+  路径：/api/short-link/v1/page
+
+     /**
+         * 分页查询短链接
+         *
+         * @param requestParam
+         * @return
+         */
+        @GetMapping("/api/short-link/v1/page")
+        public Result<IPage<ShortLinkPageRespDTO>> pageShortLink( ShortLinkPageReqDTO requestParam){
+            return Results.success(shortLinkService.pageShortLink(requestParam));
+        }
+
+  5.接口层
+
+     /**
+       * 分页查询短链接
+       *
+       * @param requestParam 分页查询参数
+       * @return 短链接列表
+       */
+      IPage<ShortLinkPageRespDTO> pageShortLink(ShortLinkPageReqDTO requestParam);
+
+6.实现层
+
+    @Override
+        public IPage<ShortLinkPageRespDTO> pageShortLink(ShortLinkPageReqDTO requestParam) {
+            LambdaQueryWrapper<ShortLinkDO> queryWrapper = Wrappers.lambdaQuery(ShortLinkDO.class)
+                    .orderByDesc(ShortLinkDO::getCreateTime)
+                    .eq(ShortLinkDO::getGid, requestParam.getGid())
+                    .eq(ShortLinkDO::getEnableStatus, 0)
+                    .eq(ShortLinkDO::getDelFlag, 0);
+            IPage<ShortLinkDO> resultPage = baseMapper.selectPage(requestParam, queryWrapper);
+            return resultPage.convert(each -> BeanUtil.toBean(each, ShortLinkPageRespDTO.class));
+        }
+
+
+
+
+
+
+
+
+
+
+
+
 
