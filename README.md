@@ -1350,10 +1350,105 @@ StrUtil.isEmpty("")判断是否为空字符串（不含 null）
             return resultPage.convert(each -> BeanUtil.toBean(each, ShortLinkPageRespDTO.class));
         }
 
+## 4.7后管联调中台短链接接口
+  1.把中台的req和resp复制到后管的admin.remote.dto包里
+  2.在remote中定义ShortLinkRemoteService接口
+  
+         /**
+     * 短链接中台远程调用服务
+     */
+    public interface ShortLinkRemoteService {
+        /**
+         * 创建短链接
+         *
+         * @param requestParam 创建短链接请求参数
+         * @return 短链接创建响应
+         */
+        default Result<ShortLinkCreateRespDTO> createShortLink(ShortLinkCreateReqDTO requestParam){
+            //如果不转换会怎样？
+            // 结果：Hutool 会调用对象的 toString() 方法
+            // 发送的内容：com.nageoffer.shortlink.admin.remote.dto.req.ShortLinkCreateReqDTO@1a2b3c4d
+            // 服务器收到这样的字符串，无法解析！
+            String resultBodyStr = HttpUtil.post("http://127.0.0.1:8001/api/short-link/v1/create", JSON.toJSONString(requestParam));
+            return JSON.parseObject(resultBodyStr, new TypeReference<>(){});
+    
+        }
+    
+        /**
+         * 分页查询短链接
+         *
+         * @param requestParam 分页查询短链接请求参数
+         * @return 分页查询短链接响应
+         */
+        default Result<IPage<ShortLinkPageRespDTO>> pageShortLink(ShortLinkPageReqDTO requestParam){
+            Map<String, Object> requestMap =new HashMap<>();
+            requestMap.put("gid", requestParam.getGid());
+            requestMap.put("current", requestParam.getCurrent());
+            requestMap.put("size", requestParam.getSize());
+            //这里返回的是JSON格式字符串
+            String resultPageStr = HttpUtil.get("http://127.0.0.1:8001/api/short-link/v1/page", requestMap);
+            //转换成对象,参数一：JSON字符串，参数二：转换的类(使用TypeReference是为了防止泛型擦除)
+            return JSON.parseObject(resultPageStr, new TypeReference<>(){});
+        }
+    }
+
+
+3.定义ShortLinkController。
+
+    @RestController
+    public class ShortLinkController {
+    ShortLinkRemoteService shortLinkRemoteService = new ShortLinkRemoteService(){};
+
+    /**
+     * 创建短链接
+     *
+     * @param requestParam
+     * @return
+     */
+    @PostMapping("/api/short-link/v1/create")
+    public Result<ShortLinkCreateRespDTO> createShortLink(@RequestBody ShortLinkCreateReqDTO requestParam) {
+        return Results.success(shortLinkService.createShortLink(requestParam));
+    }
+
+    /**
+     * 分页查询短链接
+     *
+     * @param requestParam
+     * @return
+     */
+    @GetMapping("/api/short-link/admin/v1/page")
+    public Result<IPage<ShortLinkPageRespDTO>> pageShortLink(ShortLinkPageReqDTO requestParam){
+        return shortLinkRemoteService.pageShortLink(requestParam);
+    }
+}
+
+-----
+
+1.HttpUtil.get()（糊涂包）：使用 Hutool 工具类发送 HTTP GET 请求
+
+    HttpUtil.get(String url, Map<String, Object> paramMap)
+
+返回的 JSON 格式字符
+
+第二个参数：
+用途：存放 HTTP GET 请求的查询参数（Query Parameters）
+处理方式：Hutool 会自动将 Map 中的键值对拼接到 URL 后面，形成 ?key1=value1&key2=value2 的格式
+
+
+2.JSON.parseObject()：FastJSON2 的反序列化方法
+
+3.new TypeReference<>(){}：类型引用，用于指定返回的泛型类型
+这里实际类型是 Result<IPage<ShortLinkPageRespDTO>>
+TypeReference 解决了 Java 泛型擦除问题，确保正确转换为嵌套泛型对象
 
 
 
+4.设置时间的格式
 
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
+    private Date createTime;
+
+-----
 
 
 
