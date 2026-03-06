@@ -1450,6 +1450,160 @@ TypeReference 解决了 Java 泛型擦除问题，确保正确转换为嵌套泛
 
 -----
 
+## 4.8 创建用户后默认添加短链接分组
+  为什么要自动创建默认分组？
+✅ 业务必需：短链接必须属于某个分组
+✅ 用户体验：减少操作步骤，快速上手
+✅ 心理设计：降低决策负担，提供默认选项
+✅ 产品思维：让用户尽快体验到核心价值
+✅ 行业惯例：主流产品都这样做
+
+  1.把t_group进行分组分表。
+
+  2.原来的返回实体中缺少-分组下数量这个属性。要在中台中去创建，并在后管中远程调用。
+  
+  3.创建一个resp,ShortLinkGroupCountQueryRespDTO：短连接分组查询返回参数
+
+      package com.nageoffer.shortlink.project.dto.resp;
+    
+    
+    @Data
+    public class ShortLinkGroupCountQueryRespDTO {
+    
+    
+        private String gid;
+    
+        private Integer shortLinkCount;
+    
+    }
+
+  4.然后就是去编写controller，service，impl
+
+  5.在后管中编写远程调用的逻辑
+
+  6.把实体类复制到dto.resp中
+
+  7.在controller中把写好的方法复制到这里，并在路径中添加admin。
+
+  8.再去接口层中创建方法。
+
+      /**
+         * 查询分组短链接总数
+         *
+         * @param requestParam 分组查询参数
+         * @return 分组查询结果
+         */
+       default Result<List<ShortLinkGroupCountQueryRespDTO>> listGroupShortLinkCount(List<String> requestParam){
+            Map<String, Object> requestMap =new HashMap<>();
+            //测试，15，16
+            requestMap.put("requestParam", requestParam);
+           //Hutool 会自动将 Map 中的键值对拼接到 URL 后面，形成 ?key1=value1&key2=value2 的格式
+           String requestCountStr = HttpUtil.get("http://127.0.0.1:8001/api/short-link/v1/count", requestMap);
+           //反序列化成JSON，方便数据传输
+           return JSON.parseObject(requestCountStr, new TypeReference<>(){});
+       };
+
+  9.在groupImpl中会用到这个方法，首先在注入
+
+     ShortLinkRemoteService shortLinkRemoteService = new ShortLinkRemoteService(){// 可以在这里重写接口的方法};
+
+  这是 Java 的匿名内部类 语法！
+
+  10.优化原有的listGroup方法
+  步骤 1: 已有数据
+  
+    ┌─────────────────────────────────────┐
+    │ groupDOList (分组列表)               │
+    │ [                                   │
+    │   {gid: "abc", name: "默认分组"},    │
+    │   {gid: "def", name: "工作分组"}     │
+    │ ]                                   │
+    └─────────────────────────────────────┘
+    
+    步骤 2: 提取所有 gid
+    ["abc", "def"]
+           ↓
+    步骤 3: 调用远程服务查询数量
+           ↓
+    ┌─────────────────────────────────────┐
+    │ listResult (远程返回的结果)          │
+    │ [                                   │
+    │   {gid: "abc", count: 10},          │ ← abc 分组有 10 个短链接
+    │   {gid: "def", count: 5}            │ ← def 分组有 5 个短链接
+    │ ]                                   │
+    └─────────────────────────────────────┘
+    
+    步骤 4: 复制分组基本信息
+    shortLinkGroupRespDTOList = [
+        {gid: "abc", name: "默认分组", shortLinkCount: null},
+        {gid: "def", name: "工作分组", shortLinkCount: null}
+    ]
+    
+    步骤 5: 匹配并填充数量
+    遍历每个分组 → 根据 gid 找到对应的数量 → 设置 shortLinkCount
+    
+    最终结果：
+    [
+        {gid: "abc", name: "默认分组", shortLinkCount: 10}, ✅
+        {gid: "def", name: "工作分组", shortLinkCount: 5}  ✅
+    ]
+
+  11.然后就是实现添加默认分组。优化UserServiceImpl中的register方法
+
+     @Override
+      public void register(UserRegisterReqDTO requestParam) {
+          if(!hasUsername(requestParam.getUsername())){
+              throw new ClientException(UserErrorCodeEnum.USER_NAME_EXIST);
+          }
+          RLock lock = redissonClient.getLock(LOCK_USER_REGISTER_KEY + requestParam.getUsername());
+          try{
+              if(lock.tryLock()){
+                  try{
+                      int insert = baseMapper.insert(BeanUtil.toBean(requestParam, UserDO.class));
+                      if(insert<1){
+                          throw new ClientException(USER_SAVE_ERROR);
+                      }
+                  }catch (DuplicateKeyException ex){
+                      throw new ClientException(USER_EXIST);
+                  }
+                  userRegisterCachePenetrationBloomFilter.add(requestParam.getUsername());
+                  //添加的内容
+                  groupService.saveGroup(requestParam.getUsername(),"默认分组");
+                  return;
+              }
+              throw new ClientException(USER_NAME_EXIST);
+          }finally{
+              lock.unlock();
+          }
+      }
+      
+12.因为原来的saveGroup方法，满足不了需求，所以使用了方法重载
+
+13.在GroupService中，再次定义方法
+
+    void saveGroup(String username,String groupName);
+
+14.在impl中实现
+
+     @Override
+      public void saveGroup(String groupName) {
+          saveGroup(UserContext.getUsername(),groupName);
+      }
+
+    @Override
+    public void saveGroup(String username, String groupName) {
+        String gid ;
+        do{
+            gid = RandomUtils.generateRandom();
+        } while (!hasGid(username,gid));
+        GroupDO groupDO = GroupDO.builder()
+                .name(groupName)
+                .username( username)
+                .sortOrder(0)
+                .gid(gid)
+                .build();
+        baseMapper.insert(groupDO);
+    }
 
 
 
