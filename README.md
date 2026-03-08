@@ -1605,6 +1605,122 @@ TypeReference 解决了 Java 泛型擦除问题，确保正确转换为嵌套泛
         baseMapper.insert(groupDO);
     }
 
+## 4.9短链接信息修改
+
+  1.创建对应的实体类ShortLinkUpdateReqDTO。因为是更新所以不需要Resp。
+  
+    @Data
+    public class ShortLinkUpdateReqDTO {
+    
+        /**
+         * 完整短链接
+         */
+        private String fullShortUrl;
+    
+    
+        /**
+         * 原始链接
+         */
+        private String originUrl;
+    
+        /**
+         * 分组标识
+         */
+        private String gid;
+    
+        /**
+         *  创建类型0：控制台 1：接口
+         */
+        private Integer createdType;
+    
+        /**
+         * 有效期类型 0：永久有效 1：用户自定义
+         */
+        private Integer validDateType;
+    
+        /**
+         * 有效期
+         */
+        @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss",timezone="GMT+8")
+        private Date validDate;
+    
+        /**
+         * 描述
+         */
+        private String describe;
+    }
+
+2.controller，service，impl
+  controller：
+  方式：Post
+  返回值：Results.success()
+  路径：/api/short-link/v1/update
+
+  impl:
+
+      @Transactional(rollbackFor = Exception.class)
+        @Override
+        public void updateShortLink(ShortLinkUpdateReqDTO requestParam) {
+            //查询数据库，短链接是否存在
+            LambdaQueryWrapper<ShortLinkDO> queryWrapper = Wrappers.lambdaQuery(ShortLinkDO.class)
+                    .eq(ShortLinkDO::getGid, requestParam.getGid())
+                    .eq(ShortLinkDO::getFullShortUrl, requestParam.getFullShortUrl())
+                    .eq(ShortLinkDO::getDelFlag, 0)
+                    .eq(ShortLinkDO::getEnableStatus, 0);
+            ShortLinkDO hasShortLinkDO = baseMapper.selectOne(queryWrapper);
+            if(hasShortLinkDO == null){
+                //短链接不存在,抛异常
+                throw new ServiceException("短链接不存在");
+            }
+            //获取原始数据，其中gid要用hasShortLinkDO.getGid()获取，方便进行判断。
+            ShortLinkDO shortLinkDO = ShortLinkDO.builder()
+                    .domain(hasShortLinkDO.getDomain())
+                    .shortUri(hasShortLinkDO.getShortUri())
+                    .clickNum(hasShortLinkDO.getClickNum())
+                    .favicon(hasShortLinkDO.getFavicon())
+                    .createdType(hasShortLinkDO.getCreatedType())
+                    .originUrl(requestParam.getOriginUrl())
+                    .gid(requestParam.getGid())
+                    .validDateType(requestParam.getValidDateType())
+                    .validDate(requestParam.getValidDate())
+                    .describe(requestParam.getDescribe())
+                    .build();
+            //判断gid是否一致。把从数据库查询到的gid和前端查到的gid进行比较。
+            if(Objects.equals(hasShortLinkDO.getGid(),requestParam.getGid())){
+                //若果一样，就说明用户并没有修改分组
+                LambdaUpdateWrapper<ShortLinkDO> updateWrapper = Wrappers.lambdaUpdate(ShortLinkDO.class)
+                        .eq(ShortLinkDO::getFullShortUrl, requestParam.getFullShortUrl())
+                        .eq(ShortLinkDO::getGid, requestParam.getGid())
+                        .eq(ShortLinkDO::getDelFlag, 0)
+                        .eq(ShortLinkDO::getEnableStatus, 0)
+                        //要更新的字段
+                        .set(ShortLinkDO::getOriginUrl, requestParam.getOriginUrl())
+                        .set(ShortLinkDO::getValidDateType, requestParam.getValidDateType())
+                        .set(ShortLinkDO::getDescribe, requestParam.getDescribe())
+                        .set(ShortLinkDO::getValidDate,shortLinkDO.getValidDate())
+                        .set(Objects.equals(requestParam.getValidDateType(), VailDateTypeEnum.PERMANENT.getType()), ShortLinkDO::getValidDate, null);
+                baseMapper.update(shortLinkDO,updateWrapper);
+            }else{
+                //如果不一样，就说明用户修改了分组，需要把原始数据删除，然后插入新的数据
+                LambdaUpdateWrapper<ShortLinkDO> updateWrapper = Wrappers.lambdaUpdate(ShortLinkDO.class)
+                        .eq(ShortLinkDO::getFullShortUrl, requestParam.getFullShortUrl())
+                        .eq(ShortLinkDO::getGid, hasShortLinkDO.getGid())
+                        .eq(ShortLinkDO::getDelFlag,0)
+                        .eq(ShortLinkDO::getEnableStatus,0);
+                baseMapper.delete(updateWrapper);
+                baseMapper.insert(shortLinkDO);
+            }
+        }
+
+   3.在后管系统中去调用，把对应的实体复制过去。
+
+   4.在controller中创建方法。
+
+   5.然后再接口中创建方法
+
+     default void updateShortLink(ShortLinkUpdateReqDTO requestParam){
+       HttpUtil.post("http://127.0.0.1:8001/api/short-link/v1/update", JSON.toJSONString(requestParam));
+     }
 
 
 
