@@ -1722,6 +1722,94 @@ TypeReference 解决了 Java 泛型擦除问题，确保正确转换为嵌套泛
        HttpUtil.post("http://127.0.0.1:8001/api/short-link/v1/update", JSON.toJSONString(requestParam));
      }
 
+## 4.10 短链接跳转原始链接功能
+1.先创建一个路由表
+
+    CREATE TABLE `t_link_goto`(
+        `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+        `gid` varchar(32) DEFAULT 'default' COMMENT  '分组标识',
+        `full_short_url` varchar(128) DEFAULT NULL COMMENT '完整短链接',
+        PRIMARY KEY (`id`))
+        ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;;
+
+2.再以full_short_url分片，用shardingspere进行分片分表
+
+3.在创建对应的DO和mapper
+
+    package com.nageoffer.shortlink.project.dao.entity;
+    
+    @Data
+    @TableName("t_link_goto")
+    @AllArgsConstructor
+    @NoArgsConstructor
+    @Builder
+    public class ShortLinkGotoDO {
+    
+        /**
+         * ID
+         */
+        private Long id;
+    
+        /**
+         * 分组标识
+         */
+        private String gid;
+    
+        /**
+         * 完整短链接
+         */
+        private String fullShortUrl;
+    }
+
+4.在ShortLinkCreateReqDTO中添加一个新的字段
+
+    /**
+     * 协议   不入库用来做传输
+     */
+    private String domainProtocol;
+
+
+5.controller，service，impl
+  controller：
+  方式：get
+  返回值：/{short-uri}
+  路径：/api/short-link/v1/update
+
+      @GetMapping("/{short-uri}")
+    public void restoreUrl(@PathVariable("short-uri") String shortUri, ServletRequest  request, ServletResponse response){
+        shortLinkService.restoreUrl(shortUri,request,response);
+    }
+    
+impl
+
+    @Override
+        public void restoreUrl(String shortUri, ServletRequest request, ServletResponse response) {
+            String serverName = request.getServerName();
+            String fullShortUrl = serverName + "/" + shortUri;
+            //先去路由表中查找，找到对应的gid
+            LambdaQueryWrapper<ShortLinkGotoDO> linkGotoQueryWrapper = Wrappers.lambdaQuery(ShortLinkGotoDO.class)
+                    .eq(ShortLinkGotoDO::getFullShortUrl, fullShortUrl);
+            ShortLinkGotoDO shortLinkGotoDO = shortLinkGotoMapper.selectOne(linkGotoQueryWrapper);
+            if(shortLinkGotoDO == null){
+                //严谨来说此处需要封控
+                return;
+            }
+            //通过gid再去查找到原始链接
+            LambdaQueryWrapper<ShortLinkDO> queryWrapper = Wrappers.lambdaQuery(ShortLinkDO.class)
+                    .eq(ShortLinkDO::getGid, shortLinkGotoDO.getGid())
+                    .eq(ShortLinkDO::getFullShortUrl,fullShortUrl)
+                    .eq(ShortLinkDO::getDelFlag, 0)
+                    .eq(ShortLinkDO::getEnableStatus, 0);
+            ShortLinkDO shortLinkDO = baseMapper.selectOne(queryWrapper);
+            if(shortLinkDO != null){
+                try {
+                    //重定向原始链接
+                    ((HttpServletResponse) response).sendRedirect(shortLinkDO.getOriginUrl());
+                } catch (IOException e) {
+                    log.error("重定向失败，短链接：{}", fullShortUrl, e);
+                    throw new ServiceException("重定向失败");
+                }        }
+        }
 
 
 
