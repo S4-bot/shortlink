@@ -1811,7 +1811,91 @@ impl
                 }        }
         }
 
+##4.11 获取短链接目标网站标题
+1.引入依赖
+
+      <dependency>
+                <groupId>org.jsoup</groupId>
+                <artifactId>jsoup</artifactId>
+                <version>${jsoup.version}</version>
+     </dependency>
+
+2.在中台创建Controller，service，impl
+Controller
+方式：get
+返回值：Results.success(urlTitleServiceImpl.getTitleByUrl(url))
+路径：/api/short-link/v1/title
+
+    @GetMapping("/api/short-link/v1/title")
+    public Result<String> getTitleByUrl(@RequestParam("url") String url){
+        return Results.success(urlTitleServiceImpl.getTitleByUrl(url));
+    }
+
+impl
+
+      @SneakyThrows
+          @Override
+          public String getTitleByUrl(String url)  {
+              URL tagetUrl = new URL(url);
+              HttpURLConnection connection = (HttpURLConnection) tagetUrl.openConnection();
+              connection.setRequestMethod("GET");
+              connection.connect();
+      
+              int responseCode = connection.getResponseCode();
+              if (responseCode == HttpURLConnection.HTTP_OK) {
+                  Document document = Jsoup.connect(url).get();
+                  return document.title();
+              }
+      
+              return "Erro while fetching title.";
+      
+          }
+
+3.到后管实现，把controller复制过去。
+
+4.在接口中定义方法
+
+    /**
+        * 根据URL获取网站标题
+        *
+        * @param url 目标网站路径
+        * @return 网站标题
+        */
+        default Result<String> getTitleByUrl(@RequestParam("url") String url){
+            String resultStr = HttpUtil.get("http://127.0.0.1:8001/api/short-link/v1/title?url="+ url);
+            return JSON.parseObject(resultStr, new TypeReference<>(){});
+        }
+
+
+
+## 4.12获取目标网站图标功能
+1.和上面的一样要引入依赖
+
+2.创建一个方法
+
+    @SneakyThrows
+            private String getFavicon(String url) {
+                URL targetUrl = new URL(url);
+                HttpURLConnection connection = (HttpURLConnection) targetUrl.openConnection();
+                connection.setInstanceFollowRedirects(false);
+                connection.setRequestMethod("GET");
+                connection.connect();
+                int responseCode = connection.getResponseCode();
+                if (responseCode == HttpURLConnection.HTTP_MOVED_PERM || responseCode == HttpURLConnection.HTTP_MOVED_TEMP) {
+                    Document document = Jsoup.connect(url).get();
+                    Element faviconLink = document.select("link[rel~=(?i)^(shortcut )?icon]").first();
+                    if(faviconLink != null){
+                        return faviconLink.attr("abs:href");
+                    }
+    
+                }
+    
+                return null;
+            }
+
+3.在创建短链接方法中把网站图标加进去
 
 
 
 
+        
