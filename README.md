@@ -1961,8 +1961,187 @@ impl
 ##5.4 回收站恢复短链接功能 
 
 ## 5.5回收站移除短链接功能 
-
 上面三个功能的开发步骤和第一个一样
 
-
+### 六、短链接监控
+## 1.短链接统计模块数据库表设计
         
+    CREATE TABLE `link`.`t_link_access_stats`  (
+      `id` bigint NOT NULL AUTO_INCREMENT COMMENT 'ID',
+      `gid` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '分组标识',
+      `full_short_url` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '完整短链接',
+      `date` date NULL DEFAULT NULL COMMENT '日期',
+      `pv` int NULL DEFAULT NULL COMMENT '访问量',
+      `uv` int NULL DEFAULT NULL COMMENT '独立访问数',
+      `uip` int NULL DEFAULT NULL COMMENT '独立IP数',
+      `hour` int NULL DEFAULT NULL COMMENT '小时',
+      `weekday` int NULL DEFAULT NULL COMMENT '星期',
+      `create_time` datetime NULL DEFAULT NULL COMMENT '创建时间',
+      `update_time` datetime NULL DEFAULT NULL COMMENT '修改时间',
+      `del_flag` tinyint(1) NULL DEFAULT NULL COMMENT '删除标识：0 未删除 1 已删除',
+      PRIMARY KEY (`id`) USING BTREE
+    ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
+
+## 2.统计短链接PV访问
+1.创建实体对象
+    
+      /**
+     * 短链接基础访问实体
+     */
+    @Data
+    @Builder
+    @AllArgsConstructor
+    @NoArgsConstructor
+    @TableName("t_link_access_stats")
+    public class LinkAccessStatsDO extends BaseDO {
+    
+    
+    
+        @TableId(type = IdType.AUTO)
+        /**
+         * ID
+         */
+        private Long id;
+    
+        /**
+         * 分组标识
+         */
+        private String gid;
+    
+        /**
+         * 完整短链接
+         */
+        private String fullShortUrl;
+    
+        /**
+         * 日期
+         */
+        private Date date;
+    
+        /**
+         * 访问量
+         */
+        private Integer pv;
+    
+        /**
+         * 独立访问数
+         */
+        private Integer uv;
+    
+        /**
+         * 独立IP数
+         */
+        private Integer uip;
+    
+        /**
+         * 小时
+         */
+        private Integer hour;
+    
+        /**
+         * 星期
+         */
+        private Integer weekday;
+    
+    
+    }
+
+2.创建mapper
+
+    /**
+     * 短链接基础访问监控持久层
+     */
+    public interface LinkAccessStatsMapper extends BaseMapper<LinkAccessStatsDO> {
+    
+        /**
+         * 记录基础访问监控数据
+         *
+         * @param linkAccessStats
+         */
+        @Insert("""
+            INSERT INTO t_link_access_stats (
+                full_short_url,
+                gid,
+                date,
+                pv,
+                uv,
+                uip,
+                hour,
+                weekday,
+                create_time,
+                update_time,
+                del_flag
+            )
+            VALUES (
+                #{fullShortUrl},
+                #{gid},
+                #{date},
+                #{pv},
+                #{uv},
+                #{uip},
+                #{hour},
+                #{weekday},
+                NOW(),
+                NOW(),
+                #{delFlag}
+            )
+            ON DUPLICATE KEY UPDATE
+                pv = pv + VALUES(pv),
+                uv = uv + VALUES(uv),
+                uip = uip + VALUES(uip)
+            """)
+        void shortLinkStats(LinkAccessStatsDO linkAccessStats);
+    
+    
+    }
+
+3.创建统计方法
+
+     private void shortLinkStats(String fullShortUrl,String gid,ServletRequest request, ServletResponse response){
+            try {
+                if(StrUtil.isBlank(gid)){
+                    LambdaQueryWrapper<ShortLinkGotoDO> queryWrapper = Wrappers.lambdaQuery(ShortLinkGotoDO.class)
+                            .eq(ShortLinkGotoDO::getFullShortUrl, fullShortUrl);
+                    ShortLinkGotoDO shortLinkGotoDO = shortLinkGotoMapper.selectOne(queryWrapper);
+                    gid = shortLinkGotoDO.getGid();
+                }
+                int hour = DateUtil.hour(new Date(), true);
+                Week week = DateUtil.dayOfWeekEnum(new Date());
+                int weekValue = week.getValue();
+                LinkAccessStatsDO linkAccessStatsDO = LinkAccessStatsDO.builder()
+                        .gid(gid)
+                        .fullShortUrl(fullShortUrl)
+                        .date(new Date())
+                        .pv(1)
+                        .uv(1)
+                        .uip(1)
+                        .hour(hour)
+                        .weekday(weekValue)
+                        .build();
+                // 保存到数据库
+                linkAccessStatsMapper.shortLinkStats(linkAccessStatsDO);
+            } catch (Throwable ex) {
+                log.error("短链接访问量统计异常",ex);
+            }
+        }
+        
+4.在跳转短链接方法中去调用该方法
+
+5.修改shardingspere配置文件
+
+      t_link_access_stats:
+        actualDataNodes: ds_0.t_link_access_stats
+
+
+
+
+
+
+
+
+
+
+
+
+
+
