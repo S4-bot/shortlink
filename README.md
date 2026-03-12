@@ -1897,12 +1897,72 @@ impl
 
 
 ### 五、回收站管理
-## 功能模块
+## 5.1 功能模块
   1.将短链接移至回收站；
   2.回收站分页列表查询；
   3.短链接从回收站恢复；
   4.短链接从回收站删除。
 
+
+## 5.2 短链接移至回收站功能
+
+1.创建实体对象
+
+
+    @Data
+    public class RecycleBinSaveReqDTO {
+    
+        /**
+         * 分组标识
+         */
+        private String gid;
+        /**
+         * 完整短链接
+         */
+        private String fullShortUrl;
+    
+    }
+
+2.在中台创建Controller，service，impl
+Controller
+方式：post
+返回值：Results.success()
+路径：/api/short-link/v1/recycle-bin/save
+
+     @PostMapping("/api/short-link/v1/recycle-bin/save")
+      public Result<Void> saveRecycleBin(@RequestBody RecycleBinSaveReqDTO requestParam){
+         recycleBinSerivce.saveRecycleBin(requestParam);
+         return Results.success();
+     }
+      /**
+
+impl
+
+     @Override
+        public void saveRecycleBin(RecycleBinSaveReqDTO requestParam) {
+            LambdaUpdateWrapper<ShortLinkDO> updateWrapper = Wrappers.lambdaUpdate(ShortLinkDO.class)
+                    .eq(ShortLinkDO::getGid, requestParam.getGid())
+                    .eq(ShortLinkDO::getEnableStatus, 0)
+                    .eq(ShortLinkDO::getDelFlag, 0)
+                    .eq(ShortLinkDO::getFullShortUrl, requestParam.getFullShortUrl());
+            ShortLinkDO shortLinkDO = ShortLinkDO.builder()
+                    .enableStatus(1)
+                    .build();
+            baseMapper.update(shortLinkDO, updateWrapper);
+            stringRedisTemplate.delete(String.format(GOTO_SHORT_LINK_KEY, requestParam.getFullShortUrl()));
+    
+        }
+
+
+3.然后到后管中调用
+
+## 5.3回收站分页查询功能
+
+##5.4 回收站恢复短链接功能 
+
+## 5.5回收站移除短链接功能 
+
+上面三个功能的开发步骤和第一个一样
 
 
         
