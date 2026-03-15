@@ -1964,7 +1964,7 @@ impl
 上面三个功能的开发步骤和第一个一样
 
 ### 六、短链接监控
-## 1.短链接统计模块数据库表设计
+## 6.1短链接统计模块数据库表设计
         
     CREATE TABLE `link`.`t_link_access_stats`  (
       `id` bigint NOT NULL AUTO_INCREMENT COMMENT 'ID',
@@ -1982,7 +1982,7 @@ impl
       PRIMARY KEY (`id`) USING BTREE
     ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
 
-## 2.统计短链接PV访问
+## 6.2统计短链接PV访问
 1.创建实体对象
     
       /**
@@ -2133,11 +2133,191 @@ impl
         actualDataNodes: ds_0.t_link_access_stats
 
 
+## 6.3统计短链接UV访问
+
+    private void shortLinkStats(String fullShortUrl,String gid,ServletRequest request, ServletResponse response){
+            //uvFirstFlag：标记是否是首次访问（用于判断 UV)
+            AtomicBoolean uvFirstFlag= new AtomicBoolean();
+            //cookies：获取请求中的所有 Cookie
+            Cookie[] cookies = ((HttpServletRequest) request).getCookies();
+            try {
+                // 1. 定义任务，当用户没有 UV Cookie 或首次访问某个短链接时执行
+                Runnable addResponseCookieTask = () -> {
+                    //生成一个唯一的 UV 标识（UUID）
+                    String uv = UUID.fastUUID().toString();
+                    //创建 Cookie
+                    Cookie uvCookie = new Cookie("uv", uv);
+                    //  30 天有效期
+                    uvCookie.setMaxAge(60 * 60 * 24 * 30);
+                    //设置 Cookie 的生效路径
+                    uvCookie.setPath(StrUtil.sub(fullShortUrl, fullShortUrl.indexOf("/"), fullShortUrl.length()));
+                    //添加 Cookie 到响应,将包含唯一 UV 标识的 Cookie 添加到 HTTP 响应头中，让浏览器保存。
+                    ((HttpServletResponse) response).addCookie(uvCookie);
+                    //将原子布尔值设置为 true，标记当前用户是首次访问该短链接。
+                    uvFirstFlag.set(Boolean.TRUE);
+                    //Redis 使用 Set 存储 UV 值，保证去重（即同一个 UUID 只算一次 UV）。
+                    stringRedisTemplate.opsForSet().add("short-link:stats:uv:" + fullShortUrl, uv);
+                };
+                //使用 Hutool 工具类判断请求中是否包含任何 Cookie。
+                if(ArrayUtil.isNotEmpty( cookies)){
+                    Arrays.stream(cookies)
+                            //只保留名称为 "uv" 的 Cookie
+                            .filter(each -> Objects.equals(each.getName(),"uv"))
+                            //查找第一个元素
+                            .findFirst()
+                            //将 Cookie 对象转换为其值（String 类型的 UUID)
+                            .map(Cookie::getValue)
+                            //这里的each就是UUID
+                            .ifPresentOrElse(each ->{
+                                //存在UUID执行的操作
+                                //添加到 Redis 中
+                                Long added =stringRedisTemplate.opsForSet().add("short-link:stats:uv:" + fullShortUrl,each);
+                                //判断是否是首次访问
+                                //根据added来确定是否添加成功，added=0表示添加失败，added>0表示添加成功
+                                uvFirstFlag.set(added != null && added > 0L);
+                            },addResponseCookieTask);
+                }else{
+                    addResponseCookieTask.run();
+                }
+                if(StrUtil.isBlank(gid)){
+                    LambdaQueryWrapper<ShortLinkGotoDO> queryWrapper = Wrappers.lambdaQuery(ShortLinkGotoDO.class)
+                            .eq(ShortLinkGotoDO::getFullShortUrl, fullShortUrl);
+                    ShortLinkGotoDO shortLinkGotoDO = shortLinkGotoMapper.selectOne(queryWrapper);
+                    gid = shortLinkGotoDO.getGid();
+                }
+                int hour = DateUtil.hour(new Date(), true);
+                Week week = DateUtil.dayOfWeekEnum(new Date());
+                int weekValue = week.getValue();
+                LinkAccessStatsDO linkAccessStatsDO = LinkAccessStatsDO.builder()
+                        .gid(gid)
+                        .fullShortUrl(fullShortUrl)
+                        .date(new Date())
+                        .pv(1)
+                        .uv(uvFirstFlag.get() ? 1 : 0)
+                        .uip(1)
+                        .hour(hour)
+                        .weekday(weekValue)
+                        .build();
+                // 保存到数据库
+                linkAccessStatsMapper.shortLinkStats(linkAccessStatsDO);
+            } catch (Throwable ex) {
+                log.error("短链接访问量统计异常",ex);
+            }
+        }
 
 
+## 6.4统计短链接UIP访问
+在上面的方法中修改
 
+    //uip
+                String remoteAddr = LinkUtil.getActualIp((HttpServletRequest) request);
+                Long uipAdded = stringRedisTemplate.opsForSet().add("short-link:stats:uip:" + fullShortUrl, remoteAddr);
+                boolean uipFirstFlag = uipAdded != null && uipAdded > 0L;
 
+## 6.5 统计短链接地区访问
+1.在ShortLinkConstant中定义一个常量
 
+    /**
+     * 高德获取地区接口地址
+     */
+    public static  final String AMAP_REMOTE_URL = "https://restapi.amap.com/v3/ip";
+
+2.在LinkUtil中定义一个方法，来获取真实的ip地址
+
+    /**
+         * 获取用户真实ip
+         * @param request 请求
+         * @return 用户真实ip
+         */
+        public static String getActualIp(HttpServletRequest request) {
+            String ipAddress = request.getHeader("X-Forwarded-For");
+    
+            if (ipAddress == null || ipAddress.isEmpty() || "unknown".equalsIgnoreCase(ipAddress)) {
+                ipAddress = request.getHeader("Proxy-Client-IP");
+            }
+            if (ipAddress == null || ipAddress.isEmpty() || "unknown".equalsIgnoreCase(ipAddress)) {
+                ipAddress = request.getHeader("WL-Proxy-Client-IP");
+            }
+            if (ipAddress == null || ipAddress.isEmpty() || "unknown".equalsIgnoreCase(ipAddress)) {
+                ipAddress = request.getHeader("HTTP_CLIENT_IP");
+            }
+            if (ipAddress == null || ipAddress.isEmpty() || "unknown".equalsIgnoreCase(ipAddress)) {
+                ipAddress = request.getHeader("Http_X_FORWARDED_FOR");
+            }
+            if (ipAddress == null || ipAddress.isEmpty() || "unknown".equalsIgnoreCase(ipAddress)) {
+                ipAddress = request.getRemoteAddr();
+            }
+    
+            return ipAddress;
+        }
+
+  3.建表语句
+
+      CREATE TABLE `t_link_locale_stats` (
+      `id` bigint NOT NULL AUTO_INCREMENT COMMENT 'ID',
+      `full_short_url` varchar(128) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '完整短链接',
+      `gid` varchar(32) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '分组标识',
+      `date` date DEFAULT NULL COMMENT '日期',
+      `cnt` int DEFAULT NULL COMMENT '访问量',
+      `province` varchar(64) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '省份名称',
+      `city` varchar(64) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '市名称',
+      `adcode` varchar(64) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '城市编码',
+      `country` varchar(64) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '国家标识',
+      `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+      `update_time` datetime NOT NULL COMMENT '修改时间',
+      `del_flag` tinyint(1) DEFAULT NULL COMMENT '删除标识 0表示删除 1表示未删除',
+      PRIMARY KEY (`id`),
+      UNIQUE KEY `idx_unique_locale_stats` (`full_short_url`,`gid`,`date`,`adcode`,`province`) USING BTREE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+4.创建实体对象DO
+
+5.创建Mapper
+
+    /**
+     * 地区统计访问持久层
+     */
+    public interface LinkLocaleStatsMapper extends BaseMapper<LinkLocaleStatsDO> {
+    
+    
+    
+        /**
+         * 记录地区访问监控数据
+         *
+         * @param linkLocaleStatsDO
+         */
+        @Insert("""
+            INSERT INTO t_link_locale_stats (
+                full_short_url,
+                gid,
+                date,
+                cnt,
+                country,
+                province,
+                city,
+                adcode,
+                create_time,
+                update_time,
+                del_flag
+            )
+            VALUES (
+                #{fullShortUrl},
+                #{gid},
+                #{date},
+                #{cnt},
+                #{country},
+                #{province},
+                #{city},
+                #{adcode},
+                NOW(),
+                NOW(),
+                #{delFlag}
+            )
+            ON DUPLICATE KEY UPDATE
+                cnt = cnt + VALUES(cnt)
+            """)
+        void shortLinkLocaleStats(LinkLocaleStatsDO linkLocaleStatsDO);
+    }
 
 
 
