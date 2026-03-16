@@ -2319,9 +2319,169 @@ impl
         void shortLinkLocaleStats(LinkLocaleStatsDO linkLocaleStatsDO);
     }
 
+6.在配置文件中添加参数
+
+    short-link:
+      stats:
+        locale:
+          amap-key: 7f31f3a07b266c8103220791cf2f834b
+
+7.在shortLinkStats方法中编写逻辑
+
+    linkAccessStatsMapper.shortLinkStats(linkAccessStatsDO);
+                Map<String,Object> localeParamMap =new HashMap<>();
+                localeParamMap.put("key",statsLocaleAmapKey);
+                localeParamMap.put("ip",remoteAddr);
+                String localeResultStr = HttpUtil.get(AMAP_REMOTE_URL, localeParamMap);
+                JSONObject localeResultObj = JSON.parseObject(localeResultStr);
+                String infoCode = localeResultObj.getString("infocode");
+                LinkLocaleStatsDO linkLocaleStatsDO ;
+                if(StrUtil.isNotBlank(infoCode) && StrUtil.equals(infoCode,"10000")){
+                    String province = localeResultObj.getString("province");
+                    boolean unknownFlag = StrUtil.isBlank(province);
+                    linkLocaleStatsDO = LinkLocaleStatsDO.builder()
+                            .gid(gid)
+                            .date(new Date())
+                            .fullShortUrl(fullShortUrl)
+                            .province(unknownFlag ? "未知" : province)
+                            .city(unknownFlag ? "未知" : localeResultObj.getString("city"))
+                            .adcode(unknownFlag ? "未知" : localeResultObj.getString("adcode"))
+                            .cnt(1)
+                            .country("中国")
+                            .build();
+                    linkLocaleStatsMapper.shortLinkLocaleStats(linkLocaleStatsDO);
+                }
+
+## 6.6统计短链接操作系统访问
+
+1.在LinkUtil中定义一个方法，来获取os
+
+    /**
+     * 获取用户访问操作系统
+     *
+     * @param request 请求
+     * @return 访问操作系统
+     */
+    public static String getOs(HttpServletRequest request) {
+        String userAgent = request.getHeader("User-Agent");
+        if (userAgent.toLowerCase().contains("windows")) {
+            return "Windows";
+        } else if (userAgent.toLowerCase().contains("mac")) {
+            return "Mac OS";
+        } else if (userAgent.toLowerCase().contains("linux")) {
+            return "Linux";
+        } else if (userAgent.toLowerCase().contains("unix")) {
+            return "Unix";
+        } else if (userAgent.toLowerCase().contains("android")) {
+            return "Android";
+        } else if (userAgent.toLowerCase().contains("iphone")) {
+            return "iOS";
+        } else {
+            return "Unknown";
+        }
+    }
+
+  3.建表语句
+
+          CREATE TABLE `t_link_os_stats`
+    (
+        `id`             bigint   NOT NULL AUTO_INCREMENT COMMENT 'ID',
+        `full_short_url` varchar(128) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '完整短链接',
+        `gid`            varchar(32) COLLATE utf8mb4_general_ci  DEFAULT NULL COMMENT '分组标识',
+        `date`           date                                    DEFAULT NULL COMMENT '日期',
+        `cnt`            int                                     DEFAULT NULL COMMENT '访问量',
+        `os`             varchar(64) COLLATE utf8mb4_general_ci  DEFAULT NULL COMMENT '操作系统',
+        `create_time`    datetime                                DEFAULT NULL COMMENT '创建时间',
+        `update_time`    datetime NOT NULL COMMENT '修改时间',
+        `del_flag`       tinyint(1)                              DEFAULT NULL COMMENT '删除标识 0表示删除 1表示未删除',
+        PRIMARY KEY (`id`),
+        UNIQUE KEY `idx_unique_locale_stats` (`full_short_url`, `gid`, `date`, `os`) USING BTREE
+    ) COMMENT = '短链接监控操作系统访问状态'
+        ENGINE = InnoDB
+        DEFAULT CHARSET = utf8mb4
+        COLLATE = utf8mb4_general_ci;
+        
+4.创建实体对象DO
+
+5.创建Mapper
+
+       /**
+     * 操作系统统计访问持久层
+     */
+    public interface LinkOsStatsMapper extends BaseMapper<LinkOsStatsDO> {
+        /**
+         * 记录地区访问监控数据
+         *
+         * @param
+         */
+        @Insert("""
+            INSERT INTO t_link_os_stats (
+                full_short_url,
+                gid,
+                date,
+                cnt,
+                os,
+                create_time,
+                update_time,
+                del_flag
+            )
+            VALUES (
+                #{fullShortUrl},
+                #{gid},
+                #{date},
+                #{cnt},
+                #{os},
+                NOW(),
+                NOW(),
+                #{delFlag}
+            )
+            ON DUPLICATE KEY UPDATE
+                cnt = cnt + VALUES(cnt)
+            """)
+        void shortLinkOsStats(LinkOsStatsDO linkOsStatsDO);
+    
+    }
+
+6.在shortLinkStats方法中编写逻辑
+
+     LinkOsStatsDO linkOsStatsDO = LinkOsStatsDO.builder()
+                            .gid(gid)
+                            .date(new Date())
+                            .os(LinkUtil.getOs(((HttpServletRequest) request)))
+                            .cnt(1)
+                            .fullShortUrl(fullShortUrl)
+                            .build();
+                    linkOsStatsMapper.shortLinkOsStats(linkOsStatsDO);
+
+## 6.7统计短链接访客类型访问
+  访客类型
+  当选择一个特定的时间段时，"新访客" 指的是在该时间段内访问过短链接的人群中，有多少人是首次访问者。
+  相对应地，"老访客" 指的是在该时间段内访问过短链接的人群中，已经在之前访问过的人数。
+  可以选中当天的日期然后查看老访客的数量，如果老访客数量较多， 就说明您投放的短链接很受欢迎，您的用户会持续来访问。
 
 
+## 6.8统计短链接访问设备访问
 
+## 6.9统计短链接访问网络访问
 
+这两个和上面都是一样的操作
 
+## 6.10开发访问单个短链接监控统计功能
+  通过git去写
 
+## 6.11记录短链接访问日志
+1.添加这几个字段
+
+      ALTER TABLE t_link_access_logs
+    ADD COLUMN `network` VARCHAR(64) DEFAULT NULL COMMENT '访问网络' AFTER `os`,
+    ADD COLUMN `device` VARCHAR(64) DEFAULT NULL COMMENT '访问设备' AFTER `network`,
+    ADD COLUMN `locale` VARCHAR(256) DEFAULT NULL COMMENT '访问地区' AFTER `device`;
+    
+    ALTER TABLE t_link_access_logs
+    MODIFY COLUMN `ip` VARCHAR(64) DEFAULT NULL COMMENT 'IP' AFTER `user`;
+
+2.修改实体类
+
+3.去方法中修改逻辑
+
+## 6.12分页查询短链接访问日志
