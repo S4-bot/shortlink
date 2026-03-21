@@ -2485,3 +2485,459 @@ impl
 3.去方法中修改逻辑
 
 ## 6.12分页查询短链接访问日志
+1.在LinkAccessLogsMapper中编写SQL语句来判断新老访客
+
+    /**
+     * 获取用户信息是否新老访客
+     */
+    @Select("<script>" +
+            "SELECT " +
+            "    user, " +
+            "    CASE " +
+            "        WHEN MIN(create_time) BETWEEN #{startDate} AND #{endDate} THEN '新访客' " +
+            "        ELSE '老访客' " +
+            "    END AS uvType " +
+            "FROM " +
+            "    t_link_access_logs " +
+            "WHERE " +
+            "    full_short_url = #{fullShortUrl} " +
+            "    AND gid = #{gid} " +
+            "    AND user  " +
+            "    <foreach item='item' index='index' collection='userAccessLogsList' open='(' separator=',' close=')'> " +
+            "        #{item} " +
+            "    </foreach> " +
+            "GROUP BY " +
+            "    user;" +
+            " </script>"
+    )
+    List<Map<String, Object>> selectUvTypeByUsers(
+            @Param("gid") String gid,
+            @Param("fullShortUrl") String fullShortUrl,
+            @Param("startDate") String startDate,
+            @Param("endDate") String endDate,
+            @Param("userAccessLogsList") List<String> userAccessLogsList
+    );
+这里SQL语句中会误报，但是不会影响运行
+
+2.把前端请求参数，封装成对象
+
+    /**
+     * 短链接监控访问记录请求参数
+     */
+    @Data
+    public class ShortLinkStatsAccessRecordReqDTO extends Page<LinkAccessLogsDO> {
+    
+        /**
+         * 完整短链接
+         */
+        private String fullShortUrl;
+    
+        /**
+         * 分组标识
+         */
+        private String gid;
+    
+        /**
+         * 开始日期
+         */
+        private String startDate;
+    
+        /**
+         * 结束日期
+         */
+        private String endDate;
+    }
+
+3.把后端返回的参数也封装成实体对象
+
+    /**
+     * 短链接监控访问记录响应参数
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public class ShortLinkStatsAccessRecordRespDTO {
+    
+        /**
+         * 访客类型
+         */
+        private String uvType;
+    
+        /**
+         * 浏览器
+         */
+        private String browser;
+    
+        /**
+         * 操作系统
+         */
+        private String os;
+    
+        /**
+         * ip
+         */
+        private String ip;
+    
+        /**
+         * 访问网络
+         */
+        private String network;
+    
+        /**
+         * 访问设备
+         */
+        private String device;
+    
+        /**
+         * 地区
+         */
+        private String locale;
+    
+        /**
+         * 用户信息
+         */
+        private String user;
+    
+        /**
+         * 访问时间
+         */
+        @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
+        private Date createTime;
+    }
+
+
+4.controller，service，impl
+
+Controller
+方式：get
+返回值：Results.success(shortLinkStatsService.shortLinkStatsAccessRecord(requestParam))
+路径：/api/short-link/v1/stats/access-record
+
+     /**
+       * 访问单个短链接指定时间内访问记录监控数据
+       */
+      @GetMapping("/api/short-link/v1/stats/access-record")
+      public Result<IPage<ShortLinkStatsAccessRecordRespDTO>> shortLinkStatsAccessRecord(ShortLinkStatsAccessRecordReqDTO requestParam) {
+          return Results.success(shortLinkStatsService.shortLinkStatsAccessRecord(requestParam));
+      }
+
+impl
+
+    @Override
+      public IPage<ShortLinkStatsAccessRecordRespDTO> shortLinkStatsAccessRecord(ShortLinkStatsAccessRecordReqDTO requestParam) {
+          //查询条件
+          LambdaQueryWrapper<LinkAccessLogsDO> queryWrapper = Wrappers.lambdaQuery(LinkAccessLogsDO.class)
+                  .eq(LinkAccessLogsDO::getGid, requestParam.getGid())
+                  .eq(LinkAccessLogsDO::getFullShortUrl, requestParam.getFullShortUrl())
+                  .between(LinkAccessLogsDO::getCreateTime, requestParam.getStartDate(), requestParam.getEndDate())
+                  .eq(LinkAccessLogsDO::getDelFlag, 0)
+                  .orderByDesc(LinkAccessLogsDO::getCreateTime);
+          //到t_link_access_logs表中去查找
+          IPage<LinkAccessLogsDO> linkAccessLogsDOIPage = linkAccessLogsMapper.selectPage(requestParam, queryWrapper);
+          //转换数据类型LinkAccessLogsDO --->  ShortLinkStatsAccessRecordRespDTO
+          IPage<ShortLinkStatsAccessRecordRespDTO> actualResult = linkAccessLogsDOIPage.convert(each -> BeanUtil.toBean(each, ShortLinkStatsAccessRecordRespDTO.class));
+          //获取当前页数据的user字段的值，然后封装在List中。是从当前页的访问记录中提取所有用户标识，形成一个去重前的用户列表
+          List<String> userAccessLogsList = actualResult.getRecords().stream()
+                  .map(ShortLinkStatsAccessRecordRespDTO::getUser)
+                  .toList();
+          //判断新老访客
+          //每个 Map 的结构示例：
+          //{
+          //    "user": "user_123",
+          //    "uvType": "新访客"  // 或 "旧访客"
+          //}
+          List<Map<String, Object>> uvTypeList = linkAccessLogsMapper.selectUvTypeByUsers(
+                  requestParam.getGid(),
+                  requestParam.getFullShortUrl(),
+                  requestParam.getStartDate(),
+                  requestParam.getEndDate(),
+                  userAccessLogsList
+          );
+          actualResult.getRecords().forEach(each -> {
+              String uvType = uvTypeList.stream()
+                      //过滤不是当前用户的数据
+                      .filter(item -> Objects.equals(each.getUser(), item.get("user")))
+                      .findFirst()
+                      //从 Map 中取出 "UvType" 字段的值
+                      .map(item -> item.get("UvType"))
+                      //将 Object 类型转为 String
+                      .map(Object::toString)
+                      //如果前面任何一步为空，使用默认值"旧访客"
+                      .orElse("旧访客");
+              each.setUvType(uvType);
+          });
+          return actualResult;
+      }
+
+5.最后去后管中调用
+
+
+
+## 6.13分页查询短链接今日以及历史访问信息设计
+1.在t_link表中添加几个字段
+
+    ALTER TABLE t_link_0 ADD COLUMN total_uv INT DEFAULT 0 COMMENT '历史uv', ADD COLUMN total_pv INT DEFAULT 0 COMMENT '历史pv', ADD COLUMN total_uip INT DEFAULT 0 COMMENT '历史uip';
+
+2.修改实体类，分页查询的请求参数和后端响应
+
+3.创建表t_link_stats_today
+
+    CREATE TABLE `t_link_stats_today` (
+      `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+      `gid` varchar(32) DEFAULT 'default' COMMENT '分组标识',
+      `full_short_url` varchar(128) DEFAULT NULL COMMENT '短链接',
+      `date` date DEFAULT NULL COMMENT '日期',
+      `today_pv` int(11) DEFAULT '0' COMMENT '今日PV',
+      `today_uv` int(11) DEFAULT '0' COMMENT '今日UV',
+      `today_uip` int(11) DEFAULT '0' COMMENT '今日IP数',
+      `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+      `update_time` datetime DEFAULT NULL COMMENT '修改时间',
+      `del_flag` tinyint(1) DEFAULT NULL COMMENT '删除标识 0：未删除 1：已删除',
+      PRIMARY KEY (`id`),
+      UNIQUE KEY `idx_unique_full-short-url` (`full_short_url`) USING BTREE
+    ) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4;;
+
+
+4.创建对应的实体类，持久层
+
+5.修改shardingspere的分表规则
+
+
+## 6.14统计短链接汇总访问数据 
+
+1.在ShortLinkMapper中添加方法
+
+    /**
+     * 短链接访问统计自增
+     */
+    @Update("update t_link set total_pv = total_pv + #{totalPv}, total_uv = total_uv + #{totalUv}, total_uip = total_uip + #{totalUip} where gid = #{gid} and full_short_url = #{fullShortUrl}")
+    void incrementStats(
+            @Param("gid") String gid,
+            @Param("fullShortUrl") String fullShortUrl,
+            @Param("totalPv") Integer totalPv,
+            @Param("totalUv") Integer totalUv,
+            @Param("totalUip") Integer totalUip
+    );
+
+
+2.到创建短链接和统计短链接的方法中优化
+
+                  //统计短链接
+                  baseMapper.incrementStats(gid, fullShortUrl, 1, uvFirstFlag.get() ? 1 : 0, uipFirstFlag ? 1 : 0);
+
+
+## 6.15统计统计短链接监控之今日数据访问  
+1.在LinkStatsTodayMapper中添加方法
+
+    @Insert("""
+          INSERT INTO t_link_stats_today (
+              full_short_url,
+              gid,
+              date,
+              today_pv,
+              today_uv,
+              today_uip,
+              create_time,
+              update_time,
+              del_flag
+          )
+          VALUES (
+              #{fullShortUrl},
+              #{gid},
+              #{date},
+              #{todayPv},
+              #{todayUv},
+              #{todayUip},
+              NOW(),
+              NOW(),
+              #{delFlag}
+          )
+          ON DUPLICATE KEY UPDATE
+              today_uv = today_uv + VALUES(today_uv),
+              today_pv = today_pv + VALUES(today_pv),
+              today_uip = today_uip + VALUES(today_uip)
+          """)
+      void shortLinkStatsToday(LinkStatsTodayDO linkStatsTodayDO);
+
+2.在统计方法中去调用
+
+    LinkStatsTodayDO linkStatsTodayDO = LinkStatsTodayDO.builder()
+                            .fullShortUrl(fullShortUrl)
+                            .gid(gid)
+                            .date(new Date())
+                            .todayPv(1)
+                            .todayUv(uvFirstFlag.get() ? 1 : 0)
+                            .todayUip(uipFirstFlag ? 1 : 0)
+                            .build();
+                    linkStatsTodayMapper.shortLinkStatsToday(linkStatsTodayDO);
+
+## 6.16分页查询短链接监控数据排序功能 
+1.在ShortLinkMapper中创建方法
+
+    /**
+     * 分页统计短链接
+     */
+    IPage<ShortLinkDO> pageLink(ShortLinkPageReqDTO requestParam);
+
+2.创建xml映射文件
+
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+    <mapper namespace="com.nageoffer.shortlink.project.dao.mapper.ShortLinkMapper">
+    
+        <!-- 分页查询短链接 -->
+        <select id="pageLink" parameterType="com.nageoffer.shortlink.project.dto.req.ShortLinkPageReqDTO"
+                resultType="com.nageoffer.shortlink.project.dao.entity.ShortLinkDO">
+            SELECT t.*,
+            COALESCE(s.today_pv, 0) AS todayPv,
+            COALESCE(s.today_uv, 0) AS todayUv,
+            COALESCE(s.today_uip, 0) AS todayUip
+            FROM t_link t
+            LEFT JOIN t_link_stats_today s ON t.gid = s.gid
+            AND t.full_short_url = s.full_short_url
+            AND s.date = CURDATE()
+            WHERE t.gid = #{gid}
+            AND t.enable_status = 0
+            AND t.del_flag = 0
+            <choose>
+                <when test="orderTag == 'todayPv'">
+                    ORDER BY todayPv DESC
+                </when>
+                <when test="orderTag == 'todayUv'">
+                    ORDER BY todayUv DESC
+                </when>
+                <when test="orderTag == 'todayUip'">
+                    ORDER BY todayUip DESC
+                </when>
+                <when test="orderTag == 'totalPv'">
+                    ORDER BY t.total_pv DESC
+                </when>
+                <when test="orderTag == 'totalUv'">
+                    ORDER BY t.total_uv DESC
+                </when>
+                <when test="orderTag == 'totalUip'">
+                    ORDER BY t.total_uip DESC
+                </when>
+                <otherwise>
+                    ORDER BY t.create_time DESC
+                </otherwise>
+            </choose>
+        </select>
+    </mapper>
+
+
+3.修改之前分页查询的代码逻辑
+
+    /**
+           * 分页查询短链接
+           *
+           * @param requestParam
+           * @return
+           */
+          @Override
+          public IPage<ShortLinkPageRespDTO> pageShortLink(ShortLinkPageReqDTO requestParam) {
+              IPage<ShortLinkDO> resultPage = baseMapper.pageLink(requestParam);
+              return resultPage.convert(each -> {
+                  ShortLinkPageRespDTO result = BeanUtil.toBean(each, ShortLinkPageRespDTO.class);
+                  result.setDomain("http://" + result.getDomain());
+                  return result;
+              });
+          }
+
+4.在ShortLinkDO中添加三个
+
+     /**
+         * 今日 uv
+         */
+        @TableField(exist = false)
+        private Integer todayUv;
+    
+        /**
+         * 今日 pv
+         */
+        @TableField(exist = false)
+        private Integer todayPv;
+    
+        /**
+         * 今日 ip
+         */
+        @TableField(exist = false)
+        private Integer todayUip;
+
+
+5.在shardingspere中设置绑定表，避免笛卡尔积
+
+    bindingTables:
+      - t_link, t_link_stats_today
+
+## 6.17统计短链接监控之指定时间内PV、UV、UIP数据
+1.在LinkAccessLogsMapper中创建方法
+
+     /**
+         * 根据短链接获取指定日期内基础访问统计数据（PV、UV、UIP）
+         *
+         * @param requestParam 请求参数，包含：
+         *                     - fullShortUrl: 完整短链接
+         *                     - gid: 分组标识
+         *                     - startDate: 开始日期
+         *                     - endDate: 结束日期
+         * @return 基础访问统计数据，包含：
+         *         - pv: 页面访问量（访问次数）
+         *         - uv: 独立访客数（去重用户数）
+         *         - uip: 独立 IP 数（去重 IP 数）
+         */
+        @Select("""
+            SELECT 
+                COUNT(user) AS pv, 
+                COUNT(DISTINCT user) AS uv, 
+                COUNT(DISTINCT ip) AS uip 
+            FROM 
+                t_link_access_logs 
+            WHERE 
+                full_short_url = #{param.fullShortUrl} 
+                AND gid = #{param.gid} 
+                AND create_time BETWEEN #{param.startDate} and #{param.endDate} 
+            GROUP BY 
+                full_short_url, gid
+            """)
+        LinkAccessStatsDO findPvUvUidStatsByShortLink(@Param("param") ShortLinkStatsReqDTO requestParam);
+
+2.在oneShortLinkStats方法中使用方法
+
+     //基础访问数据
+    LinkAccessStatsDO pvUvUidStatsByShortLink = linkAccessLogsMapper.findPvUvUidStatsByShortLink(requestParam);
+
+
+## 6.18统计短链接监控之指定时间内PV、UV、UIP数据
+
+
+## 6.18统计分组短链接监控数据
+
+## 6.18分页查询分组短链接访问日志 
+
+### 七、功能拓展
+## 1.短链接创建时指定默认域名
+之前每次访问创建的短链接时都要后面加上端口号和修改host，这里把这些参数都配置到xml文件中，可以减少麻烦
+
+    short-link:
+    domain:
+      default: nurl.ink:8001
+
+
+## 2.通过接口批量创建短链接
+为什么还要创建一个批量创建短链接的接口：
+✅ 减少网络开销（1 次请求 vs N 次请求）
+✅ 支持批量优化（批量插入、并发处理）
+✅ 更好的错误处理（部分成功也能接受）
+✅ 满足实际业务需求（批量导入、数据迁移）
+✅ 提升用户体验（不用重复操作 100 次）
+
+
+
+
+
+
+
+
+
